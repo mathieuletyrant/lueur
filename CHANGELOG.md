@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.1](https://github.com/mathieuletyrant/lueur/compare/v0.14.0...v0.14.1) (2026-11-02)
+
+
+### 🐛 Fixes
+
+* **web:** no sideways scrolling from the ambilight glow on narrow windows ([f471f65](https://github.com/mathieuletyrant/lueur/commit/f471f658055392f6ecb68c4951d7c97b269d761e))
+* **web:** readable film titles and queue line on phones ([5ee3249](https://github.com/mathieuletyrant/lueur/commit/5ee324978fd87272ef3ee7cc4988118ca72880ff))
+
 ## [0.14.0](https://github.com/mathieuletyrant/lueur/compare/v0.13.2...v0.14.0) (2026-11-02)
 
 
