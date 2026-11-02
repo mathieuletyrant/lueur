@@ -82,7 +82,7 @@ struct Seen {
 /// Position now, in seconds. Clients only report every few seconds, so we
 /// extrapolate from the moment *we* saw the reported position change (one
 /// poll late at most). `LastPlaybackCheckIn` is only used the first time:
-/// clients update it on their own schedule (JellyTV runs seconds ahead).
+/// clients update it on their own schedule, some seconds ahead of the position.
 fn estimate(
     seen: &mut Option<Seen>,
     item: &str,
