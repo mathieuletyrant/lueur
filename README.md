@@ -10,64 +10,87 @@ Syncs Philips Hue lights with the films played on Jellyfin, from a Linux server 
 
 During the film the load is close to zero: no decoding, just a lookup in the track.
 
-## Installation
+## Repository
 
-You need Rust, ffmpeg and OpenSSL. On macOS:
-
-```sh
-brew install rust ffmpeg openssl@3
-git clone https://github.com/mathieuletyrant/lueur && cd lueur
-OPENSSL_DIR="$(brew --prefix openssl@3)" cargo build --release
+```
+apps/server/   Rust: analysis, player, Hue/Jellyfin clients, HTTP API (`lueur serve`)
+apps/web/      React + Vite + TypeScript UI, embedded in the binary at build time
+docs/adr/      Architecture decisions
+GLOSSARY.md    Domain vocabulary (Bridge, Area, Library, Scan, Track…)
 ```
 
-The binary is `target/release/lueur`.
-
-## Usage
+## Docker (Umbrel)
 
 ```sh
-# 1. Pair (press the bridge's link button)
-lueur pair 192.168.68.xx
-# 2. List the entertainment areas and their channels
-lueur areas
-# 3. Check with a rainbow test pattern
-lueur test --seconds 10
-# 4. Analyze the library (skips films that are already up to date)
-lueur analyze /downloads/movies /downloads/shows -j 2
-# 5. Follow Jellyfin
-lueur run
+docker build -t lueur .
+docker run -d --name lueur -p 8080:8080 \
+  -v lueur-data:/data \
+  -v /home/umbrel/umbrel/data/storage/downloads:/media:ro \
+  --device /dev/dri:/dev/dri \
+  lueur
 ```
 
-`lueur inspect track.lueur --at 754` prints the grid at a given time in the terminal.
+Open `http://<host>:8080` and follow Setup: Bridge → Pairing → Area → Jellyfin → Libraries, then **Scan now** in Library. The config and the tracks live in `/data`.
 
-## Films on another machine
+Bridge discovery uses the Hue cloud (works from inside Docker) and mDNS (needs `--network host`); you can always type the IP.
 
-lueur needs to read the video files for analysis, and the tracks must be in its `store` when playing. If the films live on a server (e.g. an Umbrel) and lueur runs elsewhere, mount the server's share (SMB) and use `path_map` to translate Jellyfin's paths to the mounted ones. On the first playback, lueur logs the path Jellyfin reports when no track is found.
+## Development
+
+You need Rust, ffmpeg, OpenSSL, Node 22 and pnpm. On macOS:
+
+```sh
+brew install rust ffmpeg openssl@3 pnpm
+pnpm install
+OPENSSL_DIR="$(brew --prefix openssl@3)" cargo run -- serve   # API + UI on :8080
+pnpm dev                                                       # UI with hot reload on :5173, proxies /api to :8080
+pnpm build                                                     # UI, then the release binary with the UI inside
+pnpm check                                                     # typecheck + cargo test
+```
+
+Debug builds read the UI from `apps/web/dist`, release builds embed it.
+
+## CLI
+
+The UI covers the usual flow; the CLI stays for scripts and debugging.
+
+```sh
+lueur serve                                   # web UI + player (Docker default)
+lueur pair 192.168.68.xx                      # pair (press the bridge's link button)
+lueur areas                                   # list entertainment areas and channels
+lueur test --seconds 10                       # rainbow test pattern
+lueur analyze /downloads/movies -j 2          # analyze a folder (skips up-to-date tracks)
+lueur run                                     # player only, no UI
+lueur inspect track.lueur --at 754            # print the grid at a given time
+```
 
 ## Configuration (`lueur.json`)
+
+Written by the UI; editing it by hand works too.
 
 ```json
 {
   "store": "/data/tracks",
   "hue": { "bridge": "192.168.68.xx", "username": "…", "clientkey": "…", "area": "Living room TV" },
   "jellyfin": { "url": "http://192.168.68.58:8096", "api_key": "…", "device": "Apple TV" },
-  "path_map": [{ "from": "/media", "to": "/downloads" }],
+  "libraries": [{ "name": "Movies", "jellyfin": "/media/movies", "path": "/media/movies" }],
   "look": { "brightness": 1.0, "saturation": 1.15, "min_brightness": 0.0, "smoothing_ms": 60, "offset_ms": 0 },
-  "auto_analyze": true
+  "auto_analyze": true,
+  "jobs": 1
 }
 ```
 
-- `path_map`: paths as seen by Jellyfin → paths as seen by lueur.
+- `libraries`: Jellyfin folder → the same folder as seen by lueur (they differ when Jellyfin runs in another container). `path_map` (`[{ "from", "to" }]`) still works for extra mappings.
+- `store`: defaults to `tracks/` next to the config file.
 - `jellyfin.device`: only follow one device (substring of its name or client).
 - `look.offset_ms`: if the lights change late on cuts, increase it (e.g. 500).
-- `auto_analyze`: a film played without a track is analyzed in the background.
+- `auto_analyze`: a film played without a track is queued for analysis.
 - The Jellyfin API key must be an admin key (needed to get the file path).
 
 ## Tests
 
-`cargo test` covers extraction (black bars, grid), the track format, the HueStream packet, channel/screen mapping, the clock and Jellyfin date parsing. The prototype was also tested end to end against a fake bridge (REST + `openssl s_server` in DTLS PSK mode) and a fake Jellyfin.
+`cargo test` covers extraction (black bars, grid), the track format, the HueStream packet, channel/screen mapping, the clock, Jellyfin date parsing, path mapping, the analysis queue and config patches. The whole stack was also run end to end against a fake bridge (REST + `openssl s_server` in DTLS PSK mode) and a fake Jellyfin.
 
 ## To do
 
-- Jellyfin websocket instead of polling, Radarr/Sonarr import webhook to analyze automatically.
-- Web UI (live settings, offset from the couch, track preview).
+- Radarr/Sonarr import webhook to Scan automatically; Jellyfin websocket instead of polling.
 - Umbrel app packaging (`mathieu-lueur`).
