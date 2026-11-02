@@ -196,7 +196,11 @@ async fn main() -> Result<()> {
         }
         Cmd::Test { seconds } => player::test_pattern(&cfg, seconds, None).await?,
         Cmd::Run => {
-            let live = Arc::new(player::Live { look: cfg.look.clone().into(), ..Default::default() });
+            let live = Arc::new(player::Live {
+                look: cfg.look.clone().into(),
+                off: (!cfg.lights_on).into(),
+                ..Default::default()
+            });
             let q = queue::Queue::new(cfg.store.clone(), analyze_options(), cfg.jobs);
             q.set_limits(cfg.analysis.clone());
             let stop = async {

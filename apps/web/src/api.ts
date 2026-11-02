@@ -24,6 +24,7 @@ export type Config = {
   libraries: Library[];
   look: Look;
   auto_analyze: boolean;
+  lights_on: boolean;
   auto_scan_minutes: number;
   exclude: string[];
   sync: SyncConfig;

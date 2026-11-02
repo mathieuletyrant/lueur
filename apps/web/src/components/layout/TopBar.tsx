@@ -1,5 +1,6 @@
+import { Lightbulb, LightbulbOff } from "lucide-react";
 import type { Status } from "../../api";
-import { type View, views } from "../../context";
+import { type View, useApp, views } from "../../context";
 import { cx } from "../../ui";
 import { Logo } from "./Logo";
 import { StatusPill } from "./StatusPill";
@@ -14,7 +15,8 @@ export function TopBar({ view, setupDone, player }: { view: View; setupDone: boo
           <span className="text-[17px] font-semibold tracking-tight">lueur</span>
         </a>
         <StatusPill setupDone={setupDone} player={player} />
-        <nav className="ml-auto hidden gap-1 md:flex" aria-label="Main">
+        <LightsSwitch />
+        <nav className="hidden gap-1 md:flex" aria-label="Main">
           {(Object.keys(views) as View[]).map((k) => {
             const { label, icon: Icon } = views[k];
             return (
@@ -36,6 +38,28 @@ export function TopBar({ view, setupDone, player }: { view: View; setupDone: boo
         </nav>
       </div>
     </header>
+  );
+}
+
+/** Pauses the ambilight: films leave the lights alone until switched back on. */
+function LightsSwitch() {
+  const { cfg, patch } = useApp();
+  const on = cfg.lights_on;
+  const Icon = on ? Lightbulb : LightbulbOff;
+  return (
+    <button
+      type="button"
+      onClick={() => patch({ lights_on: !on })}
+      title={on ? "Pause the lights" : "Lights paused: switch back on"}
+      aria-pressed={!on}
+      className={cx(
+        "ml-auto flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition",
+        on ? "text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100" : "bg-amber-400/10 text-amber-300 ring-1 ring-amber-400/20 ring-inset",
+      )}
+    >
+      <Icon className="size-4" />
+      {!on && "Lights paused"}
+    </button>
   );
 }
 

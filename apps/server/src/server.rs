@@ -82,6 +82,7 @@ impl App {
             next
         };
         *self.live.look.lock().unwrap() = cfg.look.clone();
+        self.live.off.store(!cfg.lights_on, Ordering::Relaxed);
         self.queue.set_jobs(cfg.jobs);
         self.queue.set_limits(cfg.analysis.clone());
         if reload {
@@ -108,7 +109,7 @@ impl App {
 }
 
 pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> {
-    let live = Arc::new(Live { look: cfg.look.clone().into(), ..Default::default() });
+    let live = Arc::new(Live { look: cfg.look.clone().into(), off: (!cfg.lights_on).into(), ..Default::default() });
     let queue = Queue::new(cfg.store.clone(), crate::analyze_options(), cfg.jobs);
     queue.set_limits(cfg.analysis.clone());
     let app = Arc::new(App {
@@ -218,7 +219,7 @@ async fn get_config(State(app): State<Arc<App>>) -> Res {
 
 async fn patch_config(State(app): State<Arc<App>>, Json(patch): Json<Value>) -> Res {
     // The Look, the job count and the Auto scan apply live; anything else restarts the player.
-    let live = ["look", "jobs", "auto_scan_minutes", "exclude", "analysis"];
+    let live = ["look", "jobs", "auto_scan_minutes", "exclude", "analysis", "lights_on"];
     let reload = patch.as_object().is_some_and(|o| o.keys().any(|k| !live.contains(&k.as_str())));
     let cfg = app.update(
         |c| {
@@ -494,7 +495,14 @@ async fn frame(State(app): State<Arc<App>>, Query(q): Query<FrameQuery>) -> Resu
         std::process::Command::new("nice")
             .args(["-n", "19", "ffmpeg", "-v", "error", "-ss", &format!("{:.2}", q.t.max(0.0)), "-i"])
             .arg(&q.path)
-            .args(["-map", "0:V:0", "-frames:v", "1", "-vf", &format!("scale={}:-2", q.w.unwrap_or(960).clamp(160, 1920))])
+            .args([
+                "-map",
+                "0:V:0",
+                "-frames:v",
+                "1",
+                "-vf",
+                &format!("scale={}:-2", q.w.unwrap_or(960).clamp(160, 1920)),
+            ])
             .args(["-f", "mjpeg", "pipe:1"])
             .output()
     })

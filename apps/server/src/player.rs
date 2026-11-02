@@ -71,6 +71,8 @@ pub struct Live {
     pub status: Mutex<Status>,
     pub hold: Mutex<Option<Hold>>,
     pub test: Mutex<Option<TestPattern>>,
+    /// The user switched the lights off: films leave them alone.
+    pub off: std::sync::atomic::AtomicBool,
 }
 
 /// A moment of a video held on the lights, to tune the Look in front of them.
@@ -307,7 +309,8 @@ impl Player {
             let film = current
                 .as_ref()
                 .and_then(|(_, t)| t.clone())
-                .filter(|_| paused_since.is_none_or(|p| now - p < PAUSE_TIMEOUT));
+                .filter(|_| paused_since.is_none_or(|p| now - p < PAUSE_TIMEOUT))
+                .filter(|_| !self.live.off.load(std::sync::atomic::Ordering::Relaxed));
             let look = self.live.look.lock().unwrap().clone();
             let colors = if let Some(track) = film
                 && let Some(pos) = clock.position(now)

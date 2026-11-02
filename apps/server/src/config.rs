@@ -25,6 +25,8 @@ pub struct Config {
     pub exclude: Vec<String>,
     pub sync: SyncConfig,
     pub analysis: AnalysisConfig,
+    /// Off: the lights stay as they are, films don't take them over.
+    pub lights_on: bool,
 }
 
 /// How hard background analyses may work.
@@ -97,6 +99,7 @@ impl Default for Config {
                 .to_vec(),
             sync: SyncConfig::default(),
             analysis: AnalysisConfig::default(),
+            lights_on: true,
         }
     }
 }
