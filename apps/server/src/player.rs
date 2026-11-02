@@ -261,14 +261,18 @@ impl Player {
                 let np = rx.borrow_and_update().clone();
                 match &np {
                     Some(np) => {
-                        if current.as_ref().map(|c| &c.0) != Some(&np.item_id) {
+                        let new = current.as_ref().map(|c| &c.0) != Some(&np.item_id);
+                        if new {
                             info!("playing: \"{}\" on {}", np.name, np.device);
                             current = Some((np.item_id.clone(), self.load_track(np)));
                         }
                         if clock.report(np) {
                             tracing::debug!("clock re-synced to {:.2} s", clock.position(np.at).unwrap_or_default());
                         }
-                        paused_since = if np.paused { paused_since.or(Some(now)) } else { None };
+                        // First seen paused (a session lingering after the app quit, ~20 s
+                        // later): the lights wait for it to play.
+                        let since = if new { now.checked_sub(PAUSE_TIMEOUT).unwrap_or(now) } else { now };
+                        paused_since = if np.paused { paused_since.or(Some(since)) } else { None };
                     }
                     None => {
                         current = None;
