@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/mathieuletyrant/lueur/compare/v0.12.0...v0.13.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **web:** top navigation bar and a single status pill next to the logo ([f5896b8](https://github.com/mathieuletyrant/lueur/commit/f5896b88842de808badf7f2ff5099bff30e23b8c))
+
 ## [0.12.0](https://github.com/mathieuletyrant/lueur/compare/v0.11.0...v0.12.0) (2026-11-02)
 
 
