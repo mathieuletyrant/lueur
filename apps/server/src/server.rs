@@ -142,6 +142,7 @@ pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> 
         .route("/api/analyze", post(analyze))
         .route("/api/frame", get(frame))
         .route("/api/barcode", get(barcode))
+        .route("/api/calibration.mp4", get(calibration))
         .route("/api/hold", axum::routing::put(put_hold).delete(delete_hold))
         .route("/api/fs", get(fs))
         .fallback(web)
@@ -544,6 +545,62 @@ async fn barcode(State(app): State<Arc<App>>, Query(q): Query<BarcodeQuery>) -> 
     Ok(([(header::CACHE_CONTROL, "max-age=86400")], Json(hex)).into_response())
 }
 
+/// The calibration clip, 2 s per color with sharp cuts, so the lights' lag
+/// shows. `left|right` splits the screen, to check each light sits on its side.
+const CALIBRATION: [&str; 10] = ["red", "black", "lime", "black", "blue", "black", "red|blue", "black", "blue|red", "black"];
+const CALIBRATION_LOOPS: usize = 3;
+
+fn calibration_filter() -> String {
+    let n = CALIBRATION.len() * CALIBRATION_LOOPS;
+    let mut f = String::new();
+    for i in 0..n {
+        f += &match CALIBRATION[i % CALIBRATION.len()].split_once('|') {
+            Some((l, r)) => format!(
+                "color={l}:s=960x1080:r=30:d=2[l{i}];color={r}:s=960x1080:r=30:d=2[r{i}];[l{i}][r{i}]hstack[s{i}];"
+            ),
+            None => format!("color={}:s=1920x1080:r=30:d=2[s{i}];", CALIBRATION[i % CALIBRATION.len()]),
+        };
+    }
+    (0..n).for_each(|i| f += &format!("[s{i}]"));
+    f + &format!("concat=n={n}:v=1:a=0,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709[v]")
+}
+
+/// Downloads the calibration clip, to add to a Jellyfin library and play on
+/// the TV while setting the sync offset. Made once, kept next to the tracks.
+async fn calibration(State(app): State<Arc<App>>) -> Result<Response, ApiError> {
+    let file = app.config().store.join("lueur-calibration.mp4");
+    if !file.exists() {
+        let f = file.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            std::fs::create_dir_all(f.parent().unwrap_or(Path::new(".")))?;
+            let tmp = f.with_extension("part.mp4");
+            let out = std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-filter_complex", &calibration_filter()])
+                // Silent sound: some players balk at a video without audio.
+                .args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "[v]", "-map", "0:a", "-shortest"])
+                // H.264 SDR BT.709, a keyframe per second: direct play everywhere, quick seeks.
+                .args(["-c:v", "libx264", "-preset", "veryfast", "-g", "30"])
+                .args(["-c:a", "aac", "-movflags", "+faststart"])
+                .arg(&tmp)
+                .output()?;
+            if !out.status.success() {
+                anyhow::bail!("ffmpeg: {}", String::from_utf8_lossy(&out.stderr).trim());
+            }
+            Ok(std::fs::rename(&tmp, &f)?)
+        })
+        .await??;
+    }
+    let data = std::fs::read(&file)?; // A few hundred kB: solid colors compress to nothing.
+    Ok((
+        [
+            (header::CONTENT_TYPE, "video/mp4"),
+            (header::CONTENT_DISPOSITION, "attachment; filename=\"lueur-calibration.mp4\""),
+        ],
+        data,
+    )
+        .into_response())
+}
+
 #[derive(Deserialize)]
 struct HoldReq {
     path: PathBuf,
@@ -616,5 +673,13 @@ mod tests {
         let mut a = json!({ "hue": { "bridge": "1.2.3.4", "area": "x" }, "jobs": 1 });
         merge(&mut a, json!({ "hue": { "area": null }, "jobs": 2 }));
         assert_eq!(a, json!({ "hue": { "bridge": "1.2.3.4" }, "jobs": 2 }));
+    }
+
+    #[test]
+    fn calibration_clip_is_a_minute_of_two_second_shots() {
+        let f = calibration_filter();
+        assert_eq!(f.matches(":d=2[s").count() + f.matches("hstack[s").count(), 30);
+        assert!(f.starts_with("color=red:s=1920x1080:r=30:d=2[s0];"));
+        assert!(f.contains("[s29]concat=n=30:v=1:a=0,"));
     }
 }

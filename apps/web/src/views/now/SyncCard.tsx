@@ -27,6 +27,7 @@ export function SyncCard() {
     saveSync(next);
   };
   const delay = status?.player.playing?.report_delay;
+  const calibrating = status?.player.playing?.path?.endsWith("lueur-calibration.mp4");
 
   return (
     <Card className="px-5 py-4">
@@ -50,6 +51,19 @@ export function SyncCard() {
           <Button variant="ghost" onClick={() => set(0)} disabled={offset === 0}>Reset</Button>
         </div>
       </div>
+      {calibrating ? (
+        <p className="mb-2 text-xs text-glow-1">
+          Calibration clip playing: lights switch after the screen? +0.1 s. Before? −0.1 s. Pick the Intense look first, smoothing blurs the switches.
+        </p>
+      ) : (
+        <p className="mb-2 text-xs text-zinc-500">
+          Hard to tell?{" "}
+          <a href="/api/calibration.mp4" download className="text-zinc-300 underline underline-offset-2 hover:text-zinc-100">
+            Download the calibration clip
+          </a>
+          , add it to a Jellyfin library and play it on the TV.
+        </p>
+      )}
 
       <details className="group mt-2 border-t border-white/[0.06] pt-3">
         <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-400 hover:text-zinc-200">
