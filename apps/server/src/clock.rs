@@ -10,6 +10,20 @@ use crate::jellyfin::NowPlaying;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+/// What a playback report did to the clock.
+#[derive(Debug, PartialEq)]
+pub enum Correction {
+    /// Started again from the report: a new film, a pause or a resume.
+    Restarted,
+    /// The report disagreed by more than `jump`: the clock jumped by `error`
+    /// seconds (positive: the app was ahead of the clock).
+    Jumped { error: f64 },
+    /// The report disagreed by more than `drift`: a fifth of `error` corrected.
+    Nudged { error: f64 },
+    /// Close enough: nothing changed.
+    Steady { error: f64 },
+}
+
 pub struct PlaybackClock {
     /// Learn each app's report delay.
     learn: bool,
@@ -43,25 +57,26 @@ impl PlaybackClock {
         }
     }
 
-    /// Takes a report seen at `np.at`. Returns whether the clock jumped (a
-    /// seek, a pause, a new film or a gap above `jump`).
-    pub fn report(&mut self, np: &NowPlaying) -> bool {
+    /// Takes a report seen at `np.at` and says what it changed.
+    pub fn report(&mut self, np: &NowPlaying) -> Correction {
         let reported = self.estimate(np);
         let expected = self.position(np.at);
         let changed = self.item.as_deref() != Some(&np.item_id) || self.paused != np.paused;
-        let err = expected.map(|e| reported - e).unwrap_or(f64::INFINITY);
         self.item = Some(np.item_id.clone());
         self.paused = np.paused;
-        if changed || err.abs() > self.jump {
+        let (Some(expected), Some((i, p)), false) = (expected, self.anchor, changed) else {
             self.anchor = Some((np.at, reported));
-            true
+            return Correction::Restarted;
+        };
+        let error = reported - expected;
+        if error.abs() > self.jump {
+            self.anchor = Some((np.at, reported));
+            Correction::Jumped { error }
+        } else if error.abs() > self.drift {
+            self.anchor = Some((i, p + error * 0.2));
+            Correction::Nudged { error }
         } else {
-            if err.abs() > self.drift
-                && let Some((i, p)) = self.anchor
-            {
-                self.anchor = Some((i, p + err * 0.2));
-            }
-            false
+            Correction::Steady { error }
         }
     }
 
@@ -145,10 +160,10 @@ mod tests {
         let at = |s: f64| t0 + Duration::from_secs_f64(s);
         let mut c = PlaybackClock::new(&sync(false, 0.75, 0.1));
         // First sight: trust the check-in age once.
-        assert!(c.report(&np(t0, "a", 100.0, 0.0, false, Some(2.0))));
+        assert_eq!(c.report(&np(t0, "a", 100.0, 0.0, false, Some(2.0))), Correction::Restarted);
         assert_eq!(c.position(at(0.0)), Some(102.0));
         // The same report again 3 s later: the clock just runs.
-        assert!(!c.report(&np(t0, "a", 100.0, 3.0, false, Some(2.0))));
+        assert!(matches!(c.report(&np(t0, "a", 100.0, 3.0, false, Some(2.0))), Correction::Steady { .. }));
         assert_eq!(c.position(at(3.0)), Some(105.0));
         // A new report is the position now, whatever the check-in says.
         c.report(&np(t0, "a", 106.0, 6.0, false, Some(9.0)));
@@ -157,7 +172,7 @@ mod tests {
         // between): no jump forward.
         c.report(&np(t0, "a", 107.0, 8.0, true, None));
         assert_eq!(c.position(at(68.0)), Some(107.0));
-        assert!(c.report(&np(t0, "a", 107.0, 69.0, false, None)));
+        assert_eq!(c.report(&np(t0, "a", 107.0, 69.0, false, None)), Correction::Restarted);
         assert_eq!(c.position(at(70.0)), Some(108.0));
     }
 
@@ -189,10 +204,10 @@ mod tests {
         c.report(&np(t0, "a", 600.0, 1.0, true, None));
         assert_eq!(c.position(at(20.0)), Some(600.0));
         // Seek to 25:00 while paused: the still moves there at once.
-        assert!(c.report(&np(t0, "a", 1500.0, 20.0, true, None)));
+        assert_eq!(c.report(&np(t0, "a", 1500.0, 20.0, true, None)), Correction::Jumped { error: 900.0 });
         assert_eq!(c.position(at(40.0)), Some(1500.0));
         // Resume a minute later: runs from 25:00, not 25:00 plus the pause.
-        assert!(c.report(&np(t0, "a", 1500.0, 80.0, false, None)));
+        assert_eq!(c.report(&np(t0, "a", 1500.0, 80.0, false, None)), Correction::Restarted);
         assert_eq!(c.position(at(82.0)), Some(1502.0));
         // The app reports the seek only on resume: same result.
         let mut c = PlaybackClock::new(&sync(true, 0.75, 0.1));
@@ -207,14 +222,22 @@ mod tests {
         let t0 = Instant::now();
         let at = |s: f64| t0 + Duration::from_secs_f64(s);
         let mut c = PlaybackClock::new(&sync(false, 1.5, 0.25));
-        assert!(c.report(&np(t0, "a", 100.0, 0.0, false, None)));
+        assert_eq!(c.report(&np(t0, "a", 100.0, 0.0, false, None)), Correction::Restarted);
         // A slightly noisy report: ignored.
-        assert!(!c.report(&np(t0, "a", 110.1, 10.0, false, None)));
+        assert!(matches!(c.report(&np(t0, "a", 110.1, 10.0, false, None)), Correction::Steady { .. }));
         assert!((c.position(at(10.0)).unwrap() - 110.0).abs() < 1e-9);
+        // Off by 0.5 s: a fifth of it corrected.
+        let Correction::Nudged { error } = c.report(&np(t0, "a", 120.5, 20.0, false, None)) else { panic!() };
+        assert!((error - 0.5).abs() < 1e-6, "{error}");
+        assert!((c.position(at(20.0)).unwrap() - 120.1).abs() < 1e-6);
+        // The app 2 s ahead: the clock jumps there, and says by how much.
+        let Correction::Jumped { error } = c.report(&np(t0, "a", 132.1, 30.0, false, None)) else { panic!() };
+        assert!((error - 2.0).abs() < 1e-6, "{error}");
+        assert!((c.position(at(30.0)).unwrap() - 132.1).abs() < 1e-9);
         // A seek: immediate re-sync.
-        assert!(c.report(&np(t0, "a", 300.0, 11.0, false, None)));
+        assert!(matches!(c.report(&np(t0, "a", 300.0, 31.0, false, None)), Correction::Jumped { .. }));
         // Pause: the clock stops.
-        c.report(&np(t0, "a", 301.0, 12.0, true, None));
+        c.report(&np(t0, "a", 301.0, 32.0, true, None));
         assert_eq!(c.position(at(60.0)), Some(301.0));
         c.reset();
         assert_eq!(c.position(at(60.0)), None);

@@ -1,7 +1,7 @@
 //! Main loop: follows Jellyfin, loads the track of the current film and
 //! streams colors to the entertainment area at 50 frames per second.
 
-use crate::clock::PlaybackClock;
+use crate::clock::{Correction, PlaybackClock};
 use crate::color::{Look, Rgb, linear_to_srgb};
 use crate::config::Config;
 use crate::hue::{Area, Bridge, Channel};
@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const FRAME: Duration = Duration::from_millis(20);
 const PAUSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -207,7 +207,7 @@ impl Player {
                         })
                         .await;
                     if let Err(e) = pushed {
-                        tracing::debug!("{e:#}, polling instead");
+                        debug!("{e:#}, polling instead");
                     }
                     let mut tick = tokio::time::interval(Duration::from_millis(500));
                     let until = Instant::now() + Duration::from_secs(30);
@@ -266,9 +266,8 @@ impl Player {
                             info!("playing: \"{}\" on {}", np.name, np.device);
                             current = Some((np.item_id.clone(), self.load_track(np)));
                         }
-                        if clock.report(np) {
-                            tracing::debug!("clock re-synced to {:.2} s", clock.position(np.at).unwrap_or_default());
-                        }
+                        let correction = clock.report(np);
+                        log_correction(&correction, &clock, np);
                         // First seen paused (a session lingering after the app quit, ~20 s
                         // later): the lights wait for it to play.
                         let since = if new { now.checked_sub(PAUSE_TIMEOUT).unwrap_or(now) } else { now };
@@ -381,6 +380,33 @@ pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Resul
     Ok(())
 }
 
+/// Says how a playback report moved the clock. A jump or a nudge moves the
+/// lights in the film at once, so they are worth an info line.
+fn log_correction(correction: &Correction, clock: &PlaybackClock, np: &NowPlaying) {
+    let at = timecode(clock.position(np.at).unwrap_or_default());
+    let delay = match clock.report_delay() {
+        Some(delay) => format!("{delay:.2} s"),
+        None => "not learned yet".to_string(),
+    };
+    match correction {
+        Correction::Restarted => debug!("clock restarted at {at}"),
+        Correction::Jumped { error } => {
+            info!("clock jumped {error:+.2} s to {at}: {}'s report disagreed (report delay {delay})", np.device)
+        }
+        Correction::Nudged { error } => {
+            info!("clock off by {error:+.2} s at {at}, corrected gently (report delay {delay})")
+        }
+        Correction::Steady { error } => debug!("clock within {error:+.2} s of the report at {at}"),
+    }
+}
+
+/// A film position as the players show it: 12:34, or 1:02:03.
+fn timecode(seconds: f64) -> String {
+    let total = seconds.max(0.0).round() as u64;
+    let (hours, minutes, secs) = (total / 3600, total / 60 % 60, total % 60);
+    if hours > 0 { format!("{hours}:{minutes:02}:{secs:02}") } else { format!("{minutes}:{secs:02}") }
+}
+
 fn hue_to_rgb(h: f32) -> Rgb {
     let h = h.rem_euclid(1.0) * 6.0;
     let x = 1.0 - (h % 2.0 - 1.0).abs();
@@ -394,4 +420,17 @@ fn hue_to_rgb(h: f32) -> Rgb {
     };
     // sRGB → linear values, to stay consistent with the rest of the pipeline.
     [r, g, b].map(|v: f32| v.powf(2.2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timecode;
+
+    #[test]
+    fn timecodes_read_like_a_player() {
+        assert_eq!(timecode(0.0), "0:00");
+        assert_eq!(timecode(754.4), "12:34");
+        assert_eq!(timecode(3723.0), "1:02:03");
+        assert_eq!(timecode(-3.0), "0:00");
+    }
 }

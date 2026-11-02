@@ -72,7 +72,7 @@ Open http://localhost:8080 and follow **Setup**, then **Library → Scan now**.
 |---|---|---|
 | `LUEUR_CONFIG` | `/data/lueur.json` | Config written by the UI; the tracks go to `tracks/` next to it |
 | `LUEUR_PORT` | `8080` | |
-| `RUST_LOG` | `lueur=info` | `lueur=debug` adds clock re-syncs |
+| `RUST_LOG` | `lueur=info` | Clock jumps and corrections are logged at info; `lueur=debug` adds every playback report |
 
 The image is amd64, tagged `latest`, `x.y` and `x.y.z`. `--device /dev/dri` is optional: without a GPU, the analysis runs on the CPU.
 
