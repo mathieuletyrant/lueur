@@ -114,6 +114,31 @@ impl Track {
         }
     }
 
+    /// Like `sample`, averaged over `t ± half` seconds with triangular
+    /// weights: a cut becomes a fade centered on it, with no delay.
+    pub fn sample_centered(&self, t: f64, half: f64, out: &mut Vec<Rgb>) {
+        let step = 1.0 / self.fps as f64;
+        let m = (half / step).ceil() as i32;
+        if m < 1 {
+            return self.sample(t, out);
+        }
+        let mut acc = vec![[0f32; 3]; self.cells()];
+        let mut total = 0.0;
+        let mut g = Vec::new();
+        for i in -m..=m {
+            let w = 1.0 - i.abs() as f32 / (m + 1) as f32;
+            self.sample(t + i as f64 * step, &mut g);
+            for (a, c) in acc.iter_mut().zip(&g) {
+                for ch in 0..3 {
+                    a[ch] += c[ch] * w;
+                }
+            }
+            total += w;
+        }
+        out.clear();
+        out.extend(acc.iter().map(|a| a.map(|v| v / total)));
+    }
+
     pub fn frame(&self, i: usize) -> &[u8] {
         let l = self.frame_len();
         &self.frames[i * l..(i + 1) * l]
@@ -177,6 +202,20 @@ mod tests {
         assert!((g[0][0] - 0.5).abs() < 1e-3);
         l.sample(99.0, &mut g); // past the end: last frame
         assert!((g[3][2] - 1.0).abs() < 1e-6);
+        // Centered: halfway through the fade exactly on the cut, already moving before it.
+        let cut = Track {
+            fps: 10.0,
+            cols: 1,
+            rows: 1,
+            source_size: 0,
+            source: String::new(),
+            frames: [[0; 30], [255; 30]].concat(),
+        };
+        let mut g = Vec::new();
+        cut.sample_centered(0.95, 0.3, &mut g);
+        assert!((g[0][0] - 0.5).abs() < 0.05, "{:?}", g[0]);
+        cut.sample_centered(0.7, 0.3, &mut g);
+        assert!(g[0][0] > 0.0 && g[0][0] < 0.2, "{:?}", g[0]);
         std::fs::remove_dir_all(dir).ok();
     }
 }

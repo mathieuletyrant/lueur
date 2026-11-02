@@ -1,28 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Lightbulb, RotateCcw, Square } from "lucide-react";
-import { api, useLoad, type Look } from "../api";
+import { api, useDebounced, useLoad, type Look } from "../api";
 import { useApp } from "../App";
 import { AreaView } from "../components/AreaView";
-import { Alert, Button, Card, CardHeader, PageHeader, rgb, time, Toggle } from "../ui";
+import { Alert, Button, Card, CardHeader, PageHeader, rgb, Slider, SwitchRow, time } from "../ui";
 
 const DEFAULT: Look = {
   brightness: 1,
   saturation: 1.15,
   min_brightness: 0,
-  smoothing_ms: 60,
+  smoothing_ms: 250,
   offset_ms: 0,
   spread: 1,
   fit_area: true,
+  centered_smoothing: true,
 };
 
-type NumKey = Exclude<keyof Look, "fit_area">;
+type NumKey = Exclude<keyof Look, "fit_area" | "centered_smoothing">;
 type Spec = { key: NumKey; label: string; hint: string; min: number; max: number; step: number; fmt: (v: number) => string };
 
 const specs: Spec[] = [
   { key: "brightness", label: "Brightness", hint: "Multiplies every color.", min: 0.1, max: 2, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: "saturation", label: "Saturation", hint: "Above 100% makes colors pop, below washes them out.", min: 0, max: 2, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: "min_brightness", label: "Minimum brightness", hint: "Keeps a soft light during dark scenes instead of going black.", min: 0, max: 0.3, step: 0.01, fmt: (v) => (v ? `${Math.round(v * 100)}%` : "Off") },
-  { key: "smoothing_ms", label: "Smoothing", hint: "Higher is calmer, lower follows cuts more sharply.", min: 0, max: 500, step: 10, fmt: (v) => (v ? `${v} ms` : "Off") },
+  { key: "smoothing_ms", label: "Smoothing", hint: "How long a change of color takes. Higher is calmer, lower follows cuts more sharply.", min: 0, max: 2000, step: 50, fmt: (v) => (v ? `${v} ms` : "Off") },
   { key: "spread", label: "Spread", hint: "How much of the screen each light reads. Lower: each light more distinct. Higher: calmer, closer colors.", min: 0.4, max: 3, step: 0.1, fmt: (v) => `${Math.round(v * 100)}%` },
 ];
 
@@ -60,21 +61,17 @@ export function LookView() {
   const { cfg, patch, status } = useApp();
   const [look, setLook] = useState<Look>(cfg.look);
   const [error, setError] = useState<string>();
-  const timer = useRef<number>(undefined);
-
-  useEffect(() => () => clearTimeout(timer.current), []);
-
+  const save = useDebounced((next: Look) =>
+    patch({ look: withoutOffset(next) }).then(() => setError(undefined), (e: Error) => setError(e.message)),
+  );
   const set = (next: Look) => {
     setLook(next);
-    clearTimeout(timer.current);
-    timer.current = window.setTimeout(
-      () => patch({ look: withoutOffset(next) }).then(() => setError(undefined), (e: Error) => setError(e.message)),
-      150,
-    );
+    save(next);
   };
 
   const changed =
     look.fit_area !== DEFAULT.fit_area ||
+    look.centered_smoothing !== DEFAULT.centered_smoothing ||
     specs.some(({ key }) => Math.abs(look[key] - DEFAULT[key]) > 1e-4); // f32 on the server side
 
   return (
@@ -95,40 +92,35 @@ export function LookView() {
       <div className="grid gap-5 lg:grid-cols-5">
         <Card className="lg:col-span-3">
           <div className="divide-y divide-white/[0.05]">
-            {specs.map((s) => {
-              const v = look[s.key];
-              const pct = ((v - s.min) / (s.max - s.min)) * 100;
-              return (
-                <div key={s.key} className="px-5 py-5">
-                  <div className="flex items-baseline justify-between gap-4">
-                    <label htmlFor={s.key} className="text-sm font-medium">{s.label}</label>
-                    <span className="text-sm text-zinc-300 tabular-nums">{s.fmt(v)}</span>
-                  </div>
-                  <input
-                    id={s.key}
-                    type="range"
-                    min={s.min}
-                    max={s.max}
-                    step={s.step}
-                    value={v}
-                    onChange={(e) => set({ ...look, [s.key]: Number(e.target.value) })}
-                    className="mt-3 w-full"
-                    style={{ "--p": `${pct}%` } as React.CSSProperties}
-                  />
-                  <p className="mt-1 text-xs text-zinc-500">{s.hint}</p>
-                </div>
-              );
-            })}
-            <label className="flex items-start justify-between gap-4 px-5 py-5">
-              <span>
-                <span className="block text-sm font-medium">Fit to area</span>
-                <span className="mt-1 block text-xs text-zinc-500">
-                  Stretches the lights' positions so the outermost ones read the screen's edges. Turn it off if your lights
-                  are placed far apart in the Hue app already.
-                </span>
-              </span>
-              <Toggle label="Fit to area" checked={look.fit_area} onChange={(v) => set({ ...look, fit_area: v })} />
-            </label>
+            {specs.map((s) => (
+              <div key={s.key} className="px-5 py-5">
+                <Slider
+                  id={s.key}
+                  label={s.label}
+                  display={s.fmt(look[s.key])}
+                  value={look[s.key]}
+                  min={s.min}
+                  max={s.max}
+                  step={s.step}
+                  onChange={(v) => set({ ...look, [s.key]: v })}
+                  hint={s.hint}
+                />
+              </div>
+            ))}
+            <SwitchRow
+              className="px-5 py-5"
+              label="Centered smoothing"
+              hint="lueur knows the film ahead, so it fades around each cut instead of after it: no delay, however calm the smoothing. Off: the lights follow like a live signal and lag by the smoothing time."
+              checked={look.centered_smoothing}
+              onChange={(v) => set({ ...look, centered_smoothing: v })}
+            />
+            <SwitchRow
+              className="px-5 py-5"
+              label="Fit to area"
+              hint="Stretches the lights' positions so the outermost ones read the screen's edges. Turn it off if your lights are placed far apart in the Hue app already."
+              checked={look.fit_area}
+              onChange={(v) => set({ ...look, fit_area: v })}
+            />
           </div>
         </Card>
 
@@ -245,28 +237,21 @@ function FrameTest() {
               ))}
             </select>
           </label>
-          <div>
-            <div className="flex items-baseline justify-between">
-              <label htmlFor="frame-t" className="text-xs font-medium text-zinc-400">Moment</label>
-              <span className="text-sm text-zinc-300 tabular-nums">
+          <Slider
+            id="frame-t"
+            label="Moment"
+            display={
+              <>
                 {time(t)} <span className="text-zinc-600">/ {time(video?.duration ?? 0)}</span>
-              </span>
-            </div>
-            <input
-              id="frame-t"
-              type="range"
-              min={0}
-              max={Math.max(1, Math.floor(video?.duration ?? 1))}
-              step={1}
-              value={t}
-              onChange={(e) => setT(Number(e.target.value))}
-              className="mt-2 w-full"
-              style={{ "--p": `${(t / Math.max(1, video?.duration ?? 1)) * 100}%` } as React.CSSProperties}
-            />
-            <p className="mt-1 text-xs text-zinc-500">
-              {holding ? "The lights follow the slider." : "Pick a scene with strong colors, then show it on the lights."}
-            </p>
-          </div>
+              </>
+            }
+            value={t}
+            min={0}
+            max={Math.max(1, Math.floor(video?.duration ?? 1))}
+            step={1}
+            onChange={setT}
+            hint={holding ? "The lights follow the slider." : "Pick a scene with strong colors, then show it on the lights."}
+          />
           {error && <Alert>{error}</Alert>}
         </div>
         <div className="lg:col-span-3">

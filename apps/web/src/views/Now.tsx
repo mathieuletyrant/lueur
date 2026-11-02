@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { ArrowRight, Clapperboard, Loader2, Pause, Rainbow, Sparkles, Tv } from "lucide-react";
-import { api } from "../api";
+import { api, useDebounced } from "../api";
 import { setupSteps, useApp } from "../App";
 import { AreaView } from "../components/AreaView";
-import { Alert, Button, Card, CardHeader, Empty, Pill, Progress, rgb, time, Decoder } from "../ui";
+import { Alert, Button, Card, CardHeader, Empty, Pill, Progress, rgb, time, Decoder, Slider, SwitchRow } from "../ui";
 
 export function Now() {
   const { cfg, status, go } = useApp();
@@ -210,51 +210,93 @@ function QueueCard() {
 
 const STEP = 100;
 
-/** How far ahead or behind the lights run compared to the picture. */
+/** How the lights follow the picture: the offset, and how the clock locks on Jellyfin. */
 function SyncCard() {
-  const { cfg, patch } = useApp();
+  const { cfg, patch, status } = useApp();
   const [offset, setOffset] = useState(cfg.look.offset_ms);
+  const [sync, setSync] = useState(cfg.sync);
   const [error, setError] = useState<string>();
-  const timer = useRef<number>(undefined);
-  useEffect(() => () => clearTimeout(timer.current), []);
+  const report = (p: Promise<unknown>) => p.then(() => setError(undefined), (e: Error) => setError(e.message));
+  const saveOffset = useDebounced((v: number) => report(patch({ look: { offset_ms: v } })));
+  // Sync settings restart the player: wait for the slider to rest.
+  const saveSync = useDebounced((v: typeof sync) => report(patch({ sync: v })), 600);
 
   const set = (v: number) => {
     v = Math.max(-10000, Math.min(10000, Math.round(v / STEP) * STEP));
     setOffset(v);
-    clearTimeout(timer.current);
-    timer.current = window.setTimeout(
-      () => patch({ look: { offset_ms: v } }).then(() => setError(undefined), (e: Error) => setError(e.message)),
-      150,
-    );
+    saveOffset(v);
   };
+  const setS = (v: Partial<typeof sync>) => {
+    const next = { ...sync, ...v };
+    setSync(next);
+    saveSync(next);
+  };
+  const delay = status?.player.playing?.report_delay;
 
   return (
     <Card className="px-5 py-4">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
         <div className="min-w-48 flex-1">
-          <div className="flex items-baseline justify-between gap-3">
-            <label htmlFor="sync-offset" className="text-sm font-medium">Sync offset</label>
-            <span className="text-sm text-zinc-300 tabular-nums">{offset > 0 ? "+" : ""}{(offset / 1000).toFixed(1)} s</span>
-          </div>
-          <input
+          <Slider
             id="sync-offset"
-            type="range"
+            label="Sync offset"
+            display={`${offset > 0 ? "+" : ""}${(offset / 1000).toFixed(1)} s`}
+            value={offset}
             min={-10000}
             max={10000}
             step={STEP}
-            value={offset}
-            onChange={(e) => set(Number(e.target.value))}
-            className="mt-2 w-full"
-            style={{ "--p": `${((offset + 10000) / 20000) * 100}%` } as React.CSSProperties}
+            onChange={set}
+            hint="Lights late on cuts? Move right. Early? Move left. Applies live."
           />
-          <p className="mt-1 text-xs text-zinc-500">Lights late on cuts? Move right. Early? Move left. Applies live.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 pb-5">
           <Button onClick={() => set(offset - STEP)} aria-label="Lights earlier by 0.1 s">−0.1 s</Button>
           <Button onClick={() => set(offset + STEP)} aria-label="Lights later by 0.1 s">+0.1 s</Button>
           <Button variant="ghost" onClick={() => set(0)} disabled={offset === 0}>Reset</Button>
         </div>
       </div>
+
+      <details className="group mt-2 border-t border-white/[0.06] pt-3">
+        <summary className="cursor-pointer list-none text-xs font-medium text-zinc-400 hover:text-zinc-200">
+          <span className="inline-block transition group-open:rotate-90">›</span> Advanced
+        </summary>
+        <div className="mt-4 grid gap-6 md:grid-cols-3">
+          <SwitchRow
+            label="Learn each app's report delay"
+            hint={
+              <>
+                Some apps tell Jellyfin their position late. lueur measures it on each report and corrects the first
+                seconds after a play or a seek.
+                {delay != null && ` Measured for this app: ${delay.toFixed(1)} s.`}
+              </>
+            }
+            checked={sync.learn_report_delay}
+            onChange={(v) => setS({ learn_report_delay: v })}
+          />
+          <Slider
+            id="sync-jump"
+            label="Re-sync after"
+            display={`${(sync.jump_ms / 1000).toFixed(2)} s`}
+            value={sync.jump_ms}
+            min={250}
+            max={3000}
+            step={50}
+            onChange={(v) => setS({ jump_ms: v })}
+            hint="A gap this large moves the lights at once. Lower: snappier after a seek, but may twitch with an app that reports unevenly."
+          />
+          <Slider
+            id="sync-drift"
+            label="Correct drifts above"
+            display={`${(sync.drift_ms / 1000).toFixed(2)} s`}
+            value={sync.drift_ms}
+            min={0}
+            max={1000}
+            step={25}
+            onChange={(v) => setS({ drift_ms: v })}
+            hint="Smaller gaps are corrected gently, without a visible jump."
+          />
+        </div>
+      </details>
       {error && <div className="mt-3"><Alert>{error}</Alert></div>}
     </Card>
   );

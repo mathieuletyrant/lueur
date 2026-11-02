@@ -52,6 +52,9 @@ pub struct Look {
     /// Stretch the lights' positions to the area's extent, so lights grouped
     /// around the TV still read the screen's edges.
     pub fit_area: bool,
+    /// Smooth around each moment (the Track is known ahead, so no delay)
+    /// rather than after it like a live signal (which lags by `smoothing_ms`).
+    pub centered_smoothing: bool,
 }
 
 impl Default for Look {
@@ -60,10 +63,12 @@ impl Default for Look {
             brightness: 1.0,
             saturation: 1.15,
             min_brightness: 0.0,
-            smoothing_ms: 60.0,
+            // Centered, so a softer default costs no delay.
+            smoothing_ms: 250.0,
             offset_ms: 0.0,
             spread: 1.0,
             fit_area: true,
+            centered_smoothing: true,
         }
     }
 }

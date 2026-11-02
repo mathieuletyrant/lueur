@@ -8,7 +8,10 @@ export type Look = {
   offset_ms: number;
   spread: number;
   fit_area: boolean;
+  centered_smoothing: boolean;
 };
+
+export type SyncConfig = { learn_report_delay: boolean; jump_ms: number; drift_ms: number };
 
 export type Library = { name: string; jellyfin: string; path: string };
 
@@ -21,6 +24,7 @@ export type Config = {
   auto_analyze: boolean;
   auto_scan_minutes: number;
   exclude: string[];
+  sync: SyncConfig;
   jobs: number;
   paired: boolean;
   has_api_key: boolean;
@@ -42,6 +46,7 @@ export type Status = {
       duration: number | null;
       paused: boolean;
       has_track: boolean;
+      report_delay: number | null;
     } | null;
   };
   queue: {
@@ -161,4 +166,16 @@ export function usePoll<T>(fn: () => Promise<T>, ms: number) {
     };
   }, [ms]);
   return { data, error };
+}
+
+/** Calls `fn` once input settles for `ms`: one request per slider pause, not per pixel. */
+export function useDebounced<A extends unknown[]>(fn: (...a: A) => void, ms = 150) {
+  const timer = useRef<number>(undefined);
+  const fnRef = useRef(fn);
+  fnRef.current = fn;
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return useCallback((...a: A) => {
+    clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => fnRef.current(...a), ms);
+  }, [ms]);
 }

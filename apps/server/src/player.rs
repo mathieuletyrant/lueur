@@ -134,6 +134,8 @@ pub struct Playing {
     pub duration: Option<f64>,
     pub paused: bool,
     pub has_track: bool,
+    /// How late the app's check-in runs, as learned (seconds).
+    pub report_delay: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,6 +257,7 @@ impl Player {
             &self.cfg.jellyfin.url,
             &self.cfg.jellyfin.api_key,
             self.cfg.jellyfin.device.clone(),
+            self.cfg.sync.learn_report_delay,
         ));
         let (tx, mut rx) = watch::channel::<Option<NowPlaying>>(None);
         let poller = {
@@ -299,7 +302,7 @@ impl Player {
             })
         };
 
-        let mut clock = Clock::default();
+        let mut clock = Clock::new(self.cfg.sync.jump_ms / 1000.0, self.cfg.sync.drift_ms / 1000.0);
         let mut current: Option<(String, Option<Arc<Track>>, Mapping)> = None;
         let mut session: Option<Session> = None;
         let mut retry_at = Instant::now();
@@ -355,6 +358,7 @@ impl Player {
                     duration: current.as_ref().and_then(|c| c.1.as_ref()).map(|t| t.duration()),
                     paused: np.paused,
                     has_track: current.as_ref().is_some_and(|c| c.1.is_some()),
+                    report_delay: np.report_delay,
                 });
             }
 
@@ -414,12 +418,19 @@ impl Player {
             let (track, mapping) = playable.unwrap();
             let Some(pos) = clock.now() else { continue };
             let look = &look;
-            track.sample(pos + look.offset_ms / 1000.0, &mut grid);
+            let t = pos + look.offset_ms / 1000.0;
+            if look.centered_smoothing {
+                track.sample_centered(t, look.smoothing_ms as f64 / 1000.0, &mut grid);
+            } else {
+                track.sample(t, &mut grid);
+            }
             mapping.colors(&grid, &mut colors);
             for c in colors.iter_mut() {
                 c.1 = look.apply(c.1);
             }
-            smoother.apply(&mut colors, look, dt);
+            if !look.centered_smoothing {
+                smoother.apply(&mut colors, look, dt);
+            }
             self.set_streaming(true, &colors);
             if let Some(p) = self.status().playing.as_mut() {
                 p.position = pos;
@@ -505,7 +516,7 @@ pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Resul
 pub fn still_colors(area: &Area, track: &Track, t: f64, look: &Look) -> Vec<(u8, Rgb)> {
     let mut grid = Vec::new();
     let mut colors = Vec::new();
-    track.sample(t, &mut grid);
+    track.sample_centered(t, if look.centered_smoothing { look.smoothing_ms as f64 / 1000.0 } else { 0.0 }, &mut grid);
     Mapping::new(&area.channels, track.cols, track.rows, look).colors(&grid, &mut colors);
     colors.iter_mut().for_each(|c| c.1 = look.apply(c.1));
     colors

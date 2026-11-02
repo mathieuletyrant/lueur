@@ -217,3 +217,72 @@ export function Decoder({ cpu }: { cpu: boolean }) {
     </span>
   );
 }
+
+/** A labelled range input, its track filled up to the thumb. */
+export function Slider({
+  id,
+  label,
+  display,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+  hint,
+}: {
+  id: string;
+  label: ReactNode;
+  display: ReactNode;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+  hint?: ReactNode;
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-4">
+        <label htmlFor={id} className="text-sm font-medium">{label}</label>
+        <span className="text-sm text-zinc-300 tabular-nums">{display}</span>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-3 w-full"
+        style={{ "--p": `${((value - min) / (max - min || 1)) * 100}%` } as React.CSSProperties}
+      />
+      {hint && <p className="mt-1 text-xs text-zinc-500">{hint}</p>}
+    </div>
+  );
+}
+
+/** A setting with a title, an explanation and a switch. */
+export function SwitchRow({
+  label,
+  hint,
+  checked,
+  onChange,
+  className,
+}: {
+  label: string;
+  hint: ReactNode;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  className?: string;
+}) {
+  return (
+    <label className={cx("flex items-start justify-between gap-4", className)}>
+      <span>
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="mt-1 block text-xs text-zinc-500">{hint}</span>
+      </span>
+      <Toggle label={label} checked={checked} onChange={onChange} />
+    </label>
+  );
+}

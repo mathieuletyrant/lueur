@@ -23,6 +23,25 @@ pub struct Config {
     pub auto_scan_minutes: u32,
     /// Videos whose path contains one of these (case-insensitive) are never analyzed.
     pub exclude: Vec<String>,
+    pub sync: SyncConfig,
+}
+
+/// How the playback clock follows Jellyfin.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SyncConfig {
+    /// Learn how late each app's check-in time is, to start right after a play or seek.
+    pub learn_report_delay: bool,
+    /// Errors above this re-sync the clock at once (ms).
+    pub jump_ms: f64,
+    /// Errors above this are corrected gently (ms).
+    pub drift_ms: f64,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self { learn_report_delay: true, jump_ms: 750.0, drift_ms: 100.0 }
+    }
 }
 
 impl Default for Config {
@@ -41,6 +60,7 @@ impl Default for Config {
             exclude: ["-trailer", "/trailers/", "-sample", "/extras/", "/featurettes/", "/behind the scenes/"]
                 .map(String::from)
                 .to_vec(),
+            sync: SyncConfig::default(),
         }
     }
 }

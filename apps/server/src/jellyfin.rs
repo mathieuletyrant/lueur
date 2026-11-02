@@ -53,6 +53,8 @@ pub struct NowPlaying {
     pub position: f64,
     pub paused: bool,
     pub at: Instant,
+    /// The app's learned report delay, in seconds.
+    pub report_delay: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,6 +71,9 @@ pub struct Jellyfin {
     http: reqwest::Client,
     paths: Mutex<HashMap<String, Option<String>>>,
     seen: Mutex<Option<Seen>>,
+    /// Learned report delay of each device's app (see `estimate`).
+    delays: Mutex<HashMap<String, f64>>,
+    learn: bool,
 }
 
 /// The last position report we saw change, and when we saw it.
@@ -81,10 +86,15 @@ struct Seen {
 
 /// Position now, in seconds. Clients only report every few seconds, so we
 /// extrapolate from the moment *we* saw the reported position change (one
-/// poll late at most). `LastPlaybackCheckIn` is only used the first time:
-/// clients update it on their own schedule, some seconds ahead of the position.
+/// poll late at most). `LastPlaybackCheckIn` is only used the first time,
+/// minus the app's report delay: clients update it on their own schedule.
+/// When a new report arrives, the check-in's age at that moment *is* that
+/// delay; with `learn`, `delay` follows it.
+#[allow(clippy::too_many_arguments)]
 fn estimate(
     seen: &mut Option<Seen>,
+    delay: &mut Option<f64>,
+    learn: bool,
     item: &str,
     ticks: i64,
     paused: bool,
@@ -101,10 +111,14 @@ fn estimate(
         Some(s) if s.item == item && s.ticks == ticks => position + now.saturating_duration_since(s.at).as_secs_f64(),
         Some(s) if s.item == item => {
             *s = Seen { item: item.into(), ticks, at: now };
+            if let Some(a) = checkin_age.filter(|a| learn && (-30.0..30.0).contains(a)) {
+                *delay = Some(delay.map_or(a, |d| d * 0.7 + a * 0.3));
+            }
             position
         }
         _ => {
-            let age = if paused { 0.0 } else { checkin_age.filter(|a| (0.0..6.0 * 3600.0).contains(a)).unwrap_or(0.0) };
+            let age = checkin_age.filter(|a| !paused && (0.0..6.0 * 3600.0).contains(a)).unwrap_or(0.0);
+            let age = (age - if learn { delay.unwrap_or(0.0) } else { 0.0 }).max(0.0);
             let at = now.checked_sub(Duration::from_secs_f64(age)).unwrap_or(now);
             *seen = Some(Seen { item: item.into(), ticks, at });
             position + age
@@ -113,7 +127,8 @@ fn estimate(
 }
 
 impl Jellyfin {
-    pub fn new(url: &str, key: &str, device: Option<String>) -> Self {
+    /// `learn`: learn each app's report delay (see `estimate`).
+    pub fn new(url: &str, key: &str, device: Option<String>, learn: bool) -> Self {
         Self {
             url: url.trim_end_matches('/').into(),
             key: key.into(),
@@ -121,6 +136,8 @@ impl Jellyfin {
             http: reqwest::Client::builder().timeout(Duration::from_secs(4)).build().unwrap(),
             paths: Mutex::new(HashMap::new()),
             seen: Mutex::new(None),
+            delays: Mutex::new(HashMap::new()),
+            learn,
         }
     }
 
@@ -197,7 +214,22 @@ impl Jellyfin {
             }
             let checkin_age = s.last_playback_check_in.as_deref().and_then(parse_iso8601).map(|t| now_wall - t);
             let ticks = ps.position_ticks.unwrap_or(0);
-            let position = estimate(&mut *self.seen.lock().await, &item.id, ticks, ps.is_paused, checkin_age, at);
+            let mut delays = self.delays.lock().await;
+            let mut delay = delays.get(&s.device_name).copied();
+            let position = estimate(
+                &mut *self.seen.lock().await,
+                &mut delay,
+                self.learn,
+                &item.id,
+                ticks,
+                ps.is_paused,
+                checkin_age,
+                at,
+            );
+            if let Some(d) = delay {
+                delays.insert(s.device_name.clone(), d);
+            }
+            drop(delays);
             let path = match item.path {
                 Some(p) => Some(p),
                 None => self.item_path(&item.id).await,
@@ -210,6 +242,7 @@ impl Jellyfin {
                 position,
                 paused: ps.is_paused,
                 at,
+                report_delay: delay,
             });
         }
         None
@@ -322,11 +355,21 @@ pub fn parse_iso8601(s: &str) -> Option<f64> {
 /// Once locked it no longer follows every (noisy) report: it only re-syncs
 /// on a real seek, a pause or a media change, and gently corrects small
 /// drifts. The lights stay smooth.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Clock {
     item: Option<String>,
     anchor: Option<(Instant, f64)>,
     paused: bool,
+    /// Errors above this re-sync at once (seconds).
+    jump: f64,
+    /// Errors above this are corrected gently (seconds).
+    drift: f64,
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        Self::new(0.75, 0.1)
+    }
 }
 
 pub enum ClockEvent {
@@ -336,16 +379,20 @@ pub enum ClockEvent {
 }
 
 impl Clock {
+    pub fn new(jump: f64, drift: f64) -> Self {
+        Self { item: None, anchor: None, paused: false, jump, drift }
+    }
+
     pub fn update(&mut self, np: &NowPlaying) -> ClockEvent {
         let expected = self.at(np.at);
         let changed = self.item.as_deref() != Some(&np.item_id) || self.paused != np.paused;
         let err = expected.map(|e| np.position - e).unwrap_or(f64::INFINITY);
         self.item = Some(np.item_id.clone());
         self.paused = np.paused;
-        if changed || err.abs() > 1.5 {
+        if changed || err.abs() > self.jump {
             self.anchor = Some((np.at, np.position));
             ClockEvent::Jump
-        } else if err.abs() > 0.25 {
+        } else if err.abs() > self.drift {
             let (i, p) = self.anchor.unwrap();
             self.anchor = Some((i, p + err * 0.2));
             ClockEvent::Slew
@@ -367,7 +414,7 @@ impl Clock {
     }
 
     pub fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self::new(self.jump, self.drift);
     }
 }
 
@@ -387,6 +434,10 @@ mod tests {
         let t0 = Instant::now();
         let at = |s: f64| t0 + Duration::from_secs_f64(s);
         let mut seen = None;
+        let mut d = None;
+        let mut estimate = |seen: &mut Option<Seen>, item, ticks, paused, age, now| {
+            estimate(seen, &mut d, false, item, ticks, paused, age, now)
+        };
         // First sight: trust the check-in age once.
         assert_eq!(estimate(&mut seen, "a", 100 * 10_000_000, false, Some(2.0), at(0.0)), 102.0);
         // Same report 3 s later: extrapolate.
@@ -401,6 +452,25 @@ mod tests {
     }
 
     #[test]
+    fn learns_the_app_report_delay_and_corrects_the_first_sight() {
+        let t0 = Instant::now();
+        let at = |s: f64| t0 + Duration::from_secs_f64(s);
+        let (mut seen, mut delay) = (None, None);
+        // An app whose check-in is 4 s older than its reports.
+        estimate(&mut seen, &mut delay, true, "a", 100 * 10_000_000, false, Some(4.0), at(0.0));
+        estimate(&mut seen, &mut delay, true, "a", 110 * 10_000_000, false, Some(4.0), at(10.0));
+        assert_eq!(delay, Some(4.0));
+        // Next film, first sight 2 s after a report: 6 s of check-in age, 2 s really.
+        let mut seen = None;
+        let p = estimate(&mut seen, &mut delay, true, "b", 50 * 10_000_000, false, Some(6.0), at(20.0));
+        assert!((p - 52.0).abs() < 1e-9, "{p}");
+        // Learning off: the check-in is taken as is.
+        let mut seen = None;
+        let p = estimate(&mut seen, &mut delay, false, "c", 50 * 10_000_000, false, Some(6.0), at(20.0));
+        assert!((p - 56.0).abs() < 1e-9, "{p}");
+    }
+
+    #[test]
     fn clock_locks_and_jumps() {
         let t0 = Instant::now();
         let np = |pos: f64, dt: f64, paused: bool| NowPlaying {
@@ -411,8 +481,9 @@ mod tests {
             position: pos,
             paused,
             at: t0 + Duration::from_secs_f64(dt),
+            report_delay: None,
         };
-        let mut c = Clock::default();
+        let mut c = Clock::new(1.5, 0.25);
         assert!(matches!(c.update(&np(100.0, 0.0, false)), ClockEvent::Jump));
         // Slightly noisy report: ignored.
         assert!(matches!(c.update(&np(110.1, 10.0, false)), ClockEvent::None));
