@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::Duration;
 use tracing::{info, warn};
 
 const VIDEO_EXT: &[&str] = &["mkv", "mp4", "m4v", "avi", "mov", "ts", "m2ts", "webm"];
@@ -32,6 +33,48 @@ pub fn collect(paths: &[PathBuf], out: &mut Vec<PathBuf>) {
             out.push(p.clone());
         }
     }
+}
+
+/// Files changed more recently than this are still being copied: Scans skip them.
+const SETTLE: Duration = Duration::from_secs(120);
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ScanResult {
+    pub queued: usize,
+    /// Orphan Tracks deleted.
+    pub removed: usize,
+}
+
+/// Queues an Analysis for every video of `libraries` without an up-to-date
+/// Track, and deletes the Orphan Tracks: those of videos that are gone or
+/// outside the Libraries. Deletes nothing when a Library can't be read (an
+/// unmounted disk would otherwise wipe the Store).
+pub fn scan(libraries: &[PathBuf], store: &Path, q: &Arc<Queue>) -> ScanResult {
+    let mut videos = Vec::new();
+    collect(libraries, &mut videos);
+    let settled = |v: &PathBuf| {
+        std::fs::metadata(v).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|e| e >= SETTLE))
+    };
+    let mut r = ScanResult::default();
+    for v in &videos {
+        if !track::is_fresh(store, v) && settled(v) && q.push(v.clone()) {
+            r.queued += 1;
+        }
+    }
+    if libraries.is_empty() || !libraries.iter().all(|l| l.is_dir()) {
+        return r;
+    }
+    let keep: HashSet<PathBuf> = videos.iter().map(|v| track::track_path(store, v)).collect();
+    for e in std::fs::read_dir(store).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "lueur") && !keep.contains(&p) && std::fs::remove_file(&p).is_ok() {
+            r.removed += 1;
+        }
+    }
+    if r.removed > 0 {
+        info!("removed {} orphan track(s)", r.removed);
+    }
+    r
 }
 
 struct Job {
@@ -234,6 +277,32 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_keeps_library_tracks_and_removes_orphans() {
+        let root = std::env::temp_dir().join(format!("lueur-scan-{}", std::process::id()));
+        let (lib, store) = (root.join("movies"), root.join("tracks"));
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        let film = lib.join("Film.mkv");
+        std::fs::write(&film, b"x").unwrap();
+        let kept = track::track_path(&store, &film);
+        let orphan = store.join("Gone-0000000000000000.lueur");
+        std::fs::write(&kept, b"").unwrap();
+        std::fs::write(&orphan, b"").unwrap();
+        let q = Queue::new(store.clone(), crate::analyze_options(), 1);
+
+        // A Library that can't be read: nothing is deleted.
+        let r = scan(&[lib.clone(), root.join("unmounted")], &store, &q);
+        assert_eq!(r.removed, 0);
+        assert!(orphan.exists());
+
+        // The film was just written: not queued yet; the orphan goes, the film's Track stays.
+        let r = scan(&[lib], &store, &q);
+        assert_eq!((r.queued, r.removed), (0, 1));
+        assert!(kept.exists() && !orphan.exists());
+        std::fs::remove_dir_all(root).ok();
+    }
 
     #[test]
     fn missing_file_fails_and_queue_goes_idle() {

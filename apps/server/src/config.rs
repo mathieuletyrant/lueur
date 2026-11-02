@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     /// Folder holding the `.lueur` tracks.
@@ -19,6 +19,24 @@ pub struct Config {
     pub auto_analyze: bool,
     /// Parallel analyses in the background queue (0 = 1).
     pub jobs: usize,
+    /// Minutes between two automatic Scans (0 = off).
+    pub auto_scan_minutes: u32,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            store: PathBuf::new(),
+            hue: Default::default(),
+            jellyfin: Default::default(),
+            libraries: Vec::new(),
+            path_map: Vec::new(),
+            look: Look::default(),
+            auto_analyze: true,
+            jobs: 1,
+            auto_scan_minutes: 15,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

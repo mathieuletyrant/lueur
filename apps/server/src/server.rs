@@ -29,6 +29,16 @@ struct App {
     /// Restarts the player with the current config.
     reload: Notify,
     stopping: AtomicBool,
+    last_scan: Mutex<Option<LastScan>>,
+}
+
+#[derive(Clone, Serialize)]
+struct LastScan {
+    /// Unix seconds.
+    at: u64,
+    auto: bool,
+    #[serde(flatten)]
+    result: queue::ScanResult,
 }
 
 struct ApiError(StatusCode, String);
@@ -94,9 +104,17 @@ impl App {
 pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> {
     let live = Arc::new(Live { look: cfg.look.clone().into(), ..Default::default() });
     let queue = Queue::new(cfg.store.clone(), crate::analyze_options(), cfg.jobs);
-    let app =
-        Arc::new(App { path, cfg: cfg.into(), live, queue, reload: Notify::new(), stopping: AtomicBool::new(false) });
+    let app = Arc::new(App {
+        path,
+        cfg: cfg.into(),
+        live,
+        queue,
+        reload: Notify::new(),
+        stopping: AtomicBool::new(false),
+        last_scan: Mutex::new(None),
+    });
     let sup = tokio::spawn(supervise(app.clone()));
+    tokio::spawn(auto_scan(app.clone()));
 
     let router = Router::new()
         .route("/api/config", get(get_config).patch(patch_config))
@@ -188,8 +206,9 @@ async fn get_config(State(app): State<Arc<App>>) -> Res {
 }
 
 async fn patch_config(State(app): State<Arc<App>>, Json(patch): Json<Value>) -> Res {
-    // The Look and the job count apply live; anything else restarts the player.
-    let reload = patch.as_object().is_some_and(|o| o.keys().any(|k| k != "look" && k != "jobs"));
+    // The Look, the job count and the Auto scan apply live; anything else restarts the player.
+    let live = ["look", "jobs", "auto_scan_minutes"];
+    let reload = patch.as_object().is_some_and(|o| o.keys().any(|k| !live.contains(&k.as_str())));
     let cfg = app.update(
         |c| {
             let mut v = serde_json::to_value(&*c)?;
@@ -215,7 +234,8 @@ async fn patch_config(State(app): State<Arc<App>>, Json(patch): Json<Value>) -> 
 
 async fn status(State(app): State<Arc<App>>) -> Res {
     let player = app.live.status.lock().unwrap().clone();
-    Ok(Json(json!({ "player": player, "queue": app.queue.snapshot() })))
+    let last_scan = app.last_scan.lock().unwrap().clone();
+    Ok(Json(json!({ "player": player, "queue": app.queue.snapshot(), "last_scan": last_scan })))
 }
 
 async fn bridges() -> Res<Vec<hue::Found>> {
@@ -325,18 +345,48 @@ async fn libraries(State(app): State<Arc<App>>) -> Res<Vec<LibraryStats>> {
     Ok(Json(stats))
 }
 
-/// Queues an Analysis for every video of every Library without an up-to-date Track.
-async fn scan(State(app): State<Arc<App>>) -> Res {
-    let cfg = app.config();
-    let q = app.queue.clone();
-    let queued = tokio::task::spawn_blocking(move || {
-        let roots: Vec<PathBuf> = cfg.libraries.iter().map(|l| PathBuf::from(&l.path)).collect();
-        let mut videos = Vec::new();
-        queue::collect(&roots, &mut videos);
-        videos.into_iter().filter(|v| !track::is_fresh(&cfg.store, v)).filter(|v| q.push(v.clone())).count()
-    })
-    .await?;
-    Ok(Json(json!({ "queued": queued })))
+impl App {
+    async fn scan(self: &Arc<Self>, auto: bool) -> anyhow::Result<LastScan> {
+        let cfg = self.config();
+        let q = self.queue.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let roots: Vec<PathBuf> = cfg.libraries.iter().map(|l| PathBuf::from(&l.path)).collect();
+            queue::scan(&roots, &cfg.store, &q)
+        })
+        .await?;
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let last = LastScan { at, auto, result };
+        *self.last_scan.lock().unwrap() = Some(last.clone());
+        Ok(last)
+    }
+}
+
+/// Runs a Scan every `auto_scan_minutes`, the first one shortly after startup.
+async fn auto_scan(app: Arc<App>) {
+    let mut last: Option<std::time::Instant> = None;
+    let mut tick = tokio::time::interval(Duration::from_secs(30));
+    loop {
+        tick.tick().await;
+        let (minutes, has_libraries) = {
+            let c = app.cfg.lock().unwrap();
+            (c.auto_scan_minutes, !c.libraries.is_empty())
+        };
+        let due = last.is_none_or(|l| l.elapsed() >= Duration::from_secs(minutes as u64 * 60));
+        if minutes == 0 || !has_libraries || !due {
+            continue;
+        }
+        last = Some(std::time::Instant::now());
+        match app.scan(true).await {
+            Ok(s) if s.result.queued > 0 => info!("auto scan: {} file(s) queued", s.result.queued),
+            Ok(_) => {}
+            Err(e) => warn!("auto scan: {e:#}"),
+        }
+    }
+}
+
+/// "Analyze missing": a Scan right now.
+async fn scan(State(app): State<Arc<App>>) -> Res<LastScan> {
+    Ok(Json(app.scan(false).await?))
 }
 
 async fn stop(State(app): State<Arc<App>>) -> Res {

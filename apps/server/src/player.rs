@@ -18,6 +18,7 @@ use tracing::{info, warn};
 const FRAME: Duration = Duration::from_millis(20);
 const STOP_AFTER: Duration = Duration::from_millis(1500);
 const PAUSE_TIMEOUT: Duration = Duration::from_secs(30);
+const RETRY_TRACK: Duration = Duration::from_secs(5);
 
 /// For each Hue channel, the grid cells that light it and their weights.
 pub struct Mapping {
@@ -189,24 +190,28 @@ impl Player {
         info!("stream stopped, lights back to their previous state");
     }
 
+    /// The Track of what is playing, if it exists already.
+    fn find_track(&self, np: &NowPlaying) -> Option<Arc<Track>> {
+        let video = self.cfg.local_path(np.path.as_ref()?);
+        let t = Track::load(&track::track_path(&self.cfg.store, &video)).ok()?;
+        info!("track loaded for \"{}\" ({:.0} min)", np.name, t.duration() / 60.0);
+        Some(Arc::new(t))
+    }
+
     fn load_track(&self, np: &NowPlaying) -> Option<Arc<Track>> {
         let Some(jpath) = &np.path else {
             warn!("\"{}\": unknown path (API key without admin rights?)", np.name);
             return None;
         };
-        let video = self.cfg.local_path(jpath);
-        let tp = track::track_path(&self.cfg.store, &video);
-        match Track::load(&tp) {
-            Ok(t) => {
-                info!("track loaded for \"{}\" ({:.0} min)", np.name, t.duration() / 60.0);
-                return Some(Arc::new(t));
-            }
-            Err(_) => warn!("no track for \"{}\" (Jellyfin path: {jpath}, local path: {})", np.name, video.display()),
+        if let Some(t) = self.find_track(np) {
+            return Some(t);
         }
+        let video = self.cfg.local_path(jpath);
+        warn!("no track for \"{}\" (Jellyfin path: {jpath}, local path: {})", np.name, video.display());
         if !video.exists() {
             warn!("lueur can't see {}: check the Library folders", video.display());
         } else if self.cfg.auto_analyze && self.queue.push_front(video) {
-            info!("analysis queued, the lights will follow on the next playback");
+            info!("analysis queued, the lights will follow as soon as it is done");
         }
         None
     }
@@ -254,6 +259,7 @@ impl Player {
         let mut retry_at = Instant::now();
         let mut idle_since: Option<Instant> = None;
         let mut paused_since: Option<Instant> = None;
+        let mut retry_track_at = Instant::now();
         let mut grid = Vec::new();
         let mut colors = Vec::new();
         let mut smoother = Smoother { state: Vec::new() };
@@ -302,6 +308,22 @@ impl Player {
                     paused: np.paused,
                     has_track: current.as_ref().is_some_and(|c| c.1.is_some()),
                 });
+            }
+
+            // Played before its Track was ready: pick it up as soon as the Analysis ends.
+            if let Some(c) = current.as_mut().filter(|c| c.1.is_none())
+                && now >= retry_track_at
+            {
+                retry_track_at = now + RETRY_TRACK;
+                let np = rx.borrow().clone().filter(|np| np.item_id == c.0);
+                if let Some(t) = np.and_then(|np| self.find_track(&np)) {
+                    c.2 = Mapping::new(&self.area.channels, t.cols, t.rows);
+                    if let Some(p) = self.status().playing.as_mut() {
+                        p.has_track = true;
+                        p.duration = Some(t.duration());
+                    }
+                    c.1 = Some(t);
+                }
             }
 
             let playable = current.as_ref().and_then(|(_, t, m)| t.clone().map(|t| (t, m)));
