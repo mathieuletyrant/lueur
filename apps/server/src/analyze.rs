@@ -135,6 +135,9 @@ fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel, codec: Option<&str>) -
     if hw == HwAccel::Vaapi && codec == Some("av1") {
         a.extend(["-c:v", "av1"].map(String::from));
     }
+    // Frames no other frame refers to (most B-frames) are skipped: about half
+    // the decoding work, colors within 1/255, a cut at most ~1/8 s late.
+    a.extend(["-skip_frame", "noref"].map(String::from));
     a.extend(["-i".into(), video.to_string_lossy().into_owned()]);
     // `V`, not `v`: skips cover pictures stored as video streams.
     a.extend(["-map", "0:V:0", "-an", "-sn", "-dn", "-vf"].map(String::from));
@@ -333,6 +336,7 @@ mod tests {
         let (c, i) = (a.iter().position(|x| x == "-c:v").unwrap(), a.iter().position(|x| x == "-i").unwrap());
         assert!(c < i && a[c + 1] == "av1");
         assert!(a.contains(&"0:V:0".to_string()));
+        assert!(a.windows(2).any(|w| w == ["-skip_frame", "noref"]));
         let a = ffmpeg_args(Path::new("f.mkv"), &opts, HwAccel::Vaapi, Some("hevc"));
         assert!(!a.contains(&"-c:v".to_string()));
     }
