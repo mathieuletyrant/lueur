@@ -240,7 +240,10 @@ impl Player {
         warn!("no track for \"{}\" (Jellyfin path: {jpath}, local path: {})", np.name, video.display());
         if !video.exists() {
             warn!("lueur can't see {}: check the Library folders", video.display());
-        } else if self.cfg.auto_analyze && self.queue.push_front(video) {
+        } else if self.cfg.auto_analyze
+            && !crate::queue::excluded(&video, &self.cfg.exclude)
+            && self.queue.push_front(video)
+        {
             info!("analysis queued, the lights will follow as soon as it is done");
         }
         None

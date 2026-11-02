@@ -214,7 +214,7 @@ async fn get_config(State(app): State<Arc<App>>) -> Res {
 
 async fn patch_config(State(app): State<Arc<App>>, Json(patch): Json<Value>) -> Res {
     // The Look, the job count and the Auto scan apply live; anything else restarts the player.
-    let live = ["look", "jobs", "auto_scan_minutes"];
+    let live = ["look", "jobs", "auto_scan_minutes", "exclude"];
     let reload = patch.as_object().is_some_and(|o| o.keys().any(|k| !live.contains(&k.as_str())));
     let cfg = app.update(
         |c| {
@@ -338,6 +338,7 @@ async fn libraries(State(app): State<Arc<App>>) -> Res<Vec<LibraryStats>> {
             .map(|l| {
                 let mut videos = Vec::new();
                 queue::collect(&[PathBuf::from(&l.path)], &mut videos);
+                videos.retain(|v| !queue::excluded(v, &cfg.exclude));
                 LibraryStats {
                     name: l.name.clone(),
                     jellyfin: l.jellyfin.clone(),
@@ -359,7 +360,7 @@ impl App {
         let q = self.queue.clone();
         let result = tokio::task::spawn_blocking(move || {
             let roots: Vec<PathBuf> = cfg.libraries.iter().map(|l| PathBuf::from(&l.path)).collect();
-            queue::scan(&roots, &cfg.store, &q)
+            queue::scan(&roots, &cfg.exclude, &cfg.store, &q)
         })
         .await?;
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -425,6 +426,7 @@ async fn videos(State(app): State<Arc<App>>) -> Res<Vec<Video>> {
         for l in &cfg.libraries {
             let mut files = Vec::new();
             queue::collect(&[PathBuf::from(&l.path)], &mut files);
+            files.retain(|v| !queue::excluded(v, &cfg.exclude));
             out.extend(files.into_iter().map(|f| {
                 Video {
                     library: l.name.clone(),

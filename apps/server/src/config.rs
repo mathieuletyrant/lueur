@@ -21,6 +21,8 @@ pub struct Config {
     pub jobs: usize,
     /// Minutes between two automatic Scans (0 = off).
     pub auto_scan_minutes: u32,
+    /// Videos whose path contains one of these (case-insensitive) are never analyzed.
+    pub exclude: Vec<String>,
 }
 
 impl Default for Config {
@@ -35,6 +37,10 @@ impl Default for Config {
             auto_analyze: true,
             jobs: 1,
             auto_scan_minutes: 15,
+            // Jellyfin and Radarr/Sonarr conventions for extras.
+            exclude: ["-trailer", "/trailers/", "-sample", "/extras/", "/featurettes/", "/behind the scenes/"]
+                .map(String::from)
+                .to_vec(),
         }
     }
 }

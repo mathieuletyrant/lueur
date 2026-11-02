@@ -20,6 +20,7 @@ export type Config = {
   look: Look;
   auto_analyze: boolean;
   auto_scan_minutes: number;
+  exclude: string[];
   jobs: number;
   paired: boolean;
   has_api_key: boolean;

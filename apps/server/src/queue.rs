@@ -46,12 +46,13 @@ pub struct ScanResult {
 }
 
 /// Queues an Analysis for every video of `libraries` without an up-to-date
-/// Track, and deletes the Orphan Tracks: those of videos that are gone or
-/// outside the Libraries. Deletes nothing when a Library can't be read (an
+/// Track, and deletes the Orphan Tracks: those of videos that are gone,
+/// excluded or outside the Libraries. Deletes nothing when a Library can't be read (an
 /// unmounted disk would otherwise wipe the Store).
-pub fn scan(libraries: &[PathBuf], store: &Path, q: &Arc<Queue>) -> ScanResult {
+pub fn scan(libraries: &[PathBuf], exclude: &[String], store: &Path, q: &Arc<Queue>) -> ScanResult {
     let mut videos = Vec::new();
     collect(libraries, &mut videos);
+    videos.retain(|v| !excluded(v, exclude));
     let settled = |v: &PathBuf| {
         std::fs::metadata(v).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|e| e >= SETTLE))
     };
@@ -75,6 +76,12 @@ pub fn scan(libraries: &[PathBuf], store: &Path, q: &Arc<Queue>) -> ScanResult {
         info!("removed {} orphan track(s)", r.removed);
     }
     r
+}
+
+/// The path contains one of `patterns`, ignoring case.
+pub fn excluded(video: &Path, patterns: &[String]) -> bool {
+    let p = video.to_string_lossy().to_lowercase();
+    patterns.iter().any(|x| !x.trim().is_empty() && p.contains(&x.trim().to_lowercase()))
 }
 
 struct Job {
@@ -299,14 +306,19 @@ mod tests {
         let q = Queue::new(store.clone(), crate::analyze_options(), 1);
 
         // A Library that can't be read: nothing is deleted.
-        let r = scan(&[lib.clone(), root.join("unmounted")], &store, &q);
+        let r = scan(&[lib.clone(), root.join("unmounted")], &[], &store, &q);
         assert_eq!(r.removed, 0);
         assert!(orphan.exists());
 
         // The film was just written: not queued yet; the orphan goes, the film's Track stays.
-        let r = scan(&[lib], &store, &q);
+        let r = scan(&[lib.clone()], &[], &store, &q);
         assert_eq!((r.queued, r.removed), (0, 1));
         assert!(kept.exists() && !orphan.exists());
+
+        // Excluded: its Track becomes an orphan too.
+        let r = scan(&[lib], &["FILM".into()], &store, &q);
+        assert_eq!(r.removed, 1);
+        assert!(!kept.exists());
         std::fs::remove_dir_all(root).ok();
     }
 

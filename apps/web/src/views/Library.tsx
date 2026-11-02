@@ -234,6 +234,7 @@ function Automation() {
             </p>
           )}
         </div>
+        <Exclude />
         <label className="flex items-start justify-between gap-4 border-t border-white/[0.06] pt-5">
           <span>
             <span className="block text-sm font-medium">Analyze on first playback</span>
@@ -245,6 +246,50 @@ function Automation() {
         </label>
       </div>
     </Card>
+  );
+}
+
+/** Keywords that keep files (trailers, samples, extras…) out of every analysis. */
+function Exclude() {
+  const { cfg, patch } = useApp();
+  const [draft, setDraft] = useState("");
+  const save = (exclude: string[]) => patch({ exclude });
+  const add = () => {
+    const k = draft.trim();
+    if (k && !cfg.exclude.includes(k)) save([...cfg.exclude, k]);
+    setDraft("");
+  };
+  return (
+    <div className="border-t border-white/[0.06] pt-5">
+      <p className="text-sm font-medium">Skip files containing</p>
+      <p className="mt-0.5 text-xs text-zinc-500">Matched anywhere in the path, ignoring case. Their tracks are removed.</p>
+      <ul className="mt-3 flex flex-wrap gap-1.5">
+        {cfg.exclude.map((k) => (
+          <li key={k} className="flex items-center gap-1 rounded-md bg-white/[0.06] py-0.5 pr-1 pl-2 font-mono text-xs text-zinc-300 ring-1 ring-white/10 ring-inset">
+            {k}
+            <button
+              onClick={() => save(cfg.exclude.filter((x) => x !== k))}
+              className="rounded px-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-100"
+              aria-label={`Stop skipping ${k}`}
+            >
+              ×
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form
+        className="mt-2 flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          add();
+        }}
+      >
+        <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="-trailer, /extras/…" className="h-8 font-mono text-xs" />
+        <Button type="submit" className="h-8 px-3 text-xs" disabled={!draft.trim()}>
+          Add
+        </Button>
+      </form>
+    </div>
   );
 }
 
