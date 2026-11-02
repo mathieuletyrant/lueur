@@ -138,6 +138,15 @@ impl Track {
             .collect()
     }
 
+    /// How bright the whole picture is at `t` (perceptual, 0 to 1), as
+    /// analyzed: no smoothing, no Look.
+    pub fn brightness(&self, t: f64) -> f32 {
+        let mut grid = Vec::new();
+        self.sample(t, &mut grid);
+        let total: f32 = grid.iter().map(|cell| luminance(*cell)).sum();
+        linear_to_srgb(total / grid.len().max(1) as f32)
+    }
+
     /// Grid in linear light at time `t` (seconds), interpolated between
     /// the two nearest analyzed frames.
     pub fn sample(&self, t: f64, out: &mut Vec<Rgb>) {

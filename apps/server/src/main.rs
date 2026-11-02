@@ -2,6 +2,7 @@ mod analyze;
 mod clock;
 mod color;
 mod config;
+mod diagnostics;
 mod hue;
 mod jellyfin;
 mod lights;

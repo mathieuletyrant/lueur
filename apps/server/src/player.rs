@@ -2,8 +2,9 @@
 //! streams colors to the entertainment area at 50 frames per second.
 
 use crate::clock::{Correction, PlaybackClock};
-use crate::color::{Look, Rgb, linear_to_srgb};
+use crate::color::{Look, Rgb, linear_to_srgb, luminance};
 use crate::config::Config;
+use crate::diagnostics::{Diagnostics, Frame, Step, Summary};
 use crate::hue::{Area, Bridge, Channel};
 use crate::jellyfin::{Jellyfin, NowPlaying};
 use crate::lights::{HueSink, Lights};
@@ -22,6 +23,8 @@ use tracing::{debug, info, warn};
 const FRAME: Duration = Duration::from_millis(20);
 const PAUSE_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_TRACK: Duration = Duration::from_secs(5);
+/// A frame this late is logged: the lights froze, then caught up at once.
+const STALL_LOGGED: f32 = 0.25;
 
 /// What the player is doing, for the UI.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -207,7 +210,7 @@ impl Player {
                         })
                         .await;
                     if let Err(e) = pushed {
-                        debug!("{e:#}, polling instead");
+                        info!("Jellyfin WebSocket: {e:#}, polling every 0.5 s for 30 s");
                     }
                     let mut tick = tokio::time::interval(Duration::from_millis(500));
                     let until = Instant::now() + Duration::from_secs(30);
@@ -236,6 +239,9 @@ impl Player {
         };
 
         let mut clock = PlaybackClock::new(&self.cfg.sync);
+        let mut diagnostics = Diagnostics::default();
+        // The Look last written to the logs, to log it again when it changes.
+        let mut logged_look: Option<Look> = None;
         let mut current: Option<(String, Option<Arc<Track>>)> = None;
         let mut paused_since: Option<Instant> = None;
         let mut retry_track_at = Instant::now();
@@ -265,9 +271,12 @@ impl Player {
                         if new {
                             info!("playing: \"{}\" on {}", np.name, np.device);
                             current = Some((np.item_id.clone(), self.load_track(np)));
+                            diagnostics.reset();
+                            logged_look = None;
                         }
                         let correction = clock.report(np);
                         log_correction(&correction, &clock, np);
+                        diagnostics.on_report(np.at, np.ticks, &correction);
                         // First seen paused (a session lingering after the app quit, ~20 s
                         // later): the lights wait for it to play.
                         let since = if new { now.checked_sub(PAUSE_TIMEOUT).unwrap_or(now) } else { now };
@@ -276,6 +285,7 @@ impl Player {
                     None => {
                         current = None;
                         clock.reset();
+                        diagnostics.reset();
                         paused_since = None;
                     }
                 }
@@ -325,7 +335,27 @@ impl Player {
                     p.position = pos;
                     p.exposure = look.auto_exposure.then_some(track.exposure);
                 }
-                Some(renderer.colors(&track, pos + look.offset_ms / 1000.0, &look, dt).to_vec())
+                let film_position = pos + look.offset_ms / 1000.0;
+                let colors = renderer.colors(&track, film_position, &look, dt).to_vec();
+                if logged_look.as_ref() != Some(&look) {
+                    info!("look: {look:?}, measured exposure ×{:.2}", track.exposure);
+                    logged_look = Some(look.clone());
+                }
+                if dt > STALL_LOGGED {
+                    warn!(
+                        "frame loop stalled {dt:.2} s at {}: the lights froze, then caught up",
+                        timecode(film_position)
+                    );
+                }
+                let lights = colors.iter().map(|c| linear_to_srgb(luminance(c.1))).fold(0.0, f32::max);
+                let frame = Frame { at: now, film: film_position, lights, picture: track.brightness(film_position) };
+                if let Some(step) = diagnostics.on_frame(frame, dt) {
+                    log_step(&step);
+                }
+                if let Some(summary) = diagnostics.summary(now) {
+                    log_summary(&summary);
+                }
+                Some(colors)
             } else if let Some(h) = self.live_hold(now) {
                 if still.as_ref().is_none_or(|s| s.0 != h.path) {
                     // ponytail: loads on the frame loop (~50 ms once per film), spawn_blocking if it stutters.
@@ -389,7 +419,7 @@ fn log_correction(correction: &Correction, clock: &PlaybackClock, np: &NowPlayin
         None => "not learned yet".to_string(),
     };
     match correction {
-        Correction::Restarted => debug!("clock restarted at {at}"),
+        Correction::Restarted => info!("clock started at {at} from {}'s report (report delay {delay})", np.device),
         Correction::Jumped { error } => {
             info!("clock jumped {error:+.2} s to {at}: {}'s report disagreed (report delay {delay})", np.device)
         }
@@ -398,6 +428,50 @@ fn log_correction(correction: &Correction, clock: &PlaybackClock, np: &NowPlayin
         }
         Correction::Steady { error } => debug!("clock within {error:+.2} s of the report at {at}"),
     }
+}
+
+fn log_step(step: &Step) {
+    let cause = match step.after_jump {
+        Some((error, ago)) => format!("{ago:.2} s after a clock jump of {error:+.2} s"),
+        None => "no clock jump".to_string(),
+    };
+    info!(
+        "lights step {:.2} → {:.2} in {:.2} s at {}; picture {:.2} → {:.2}; {cause}",
+        step.lights_from,
+        step.lights_to,
+        step.seconds,
+        timecode_tenths(step.film),
+        step.picture_from,
+        step.picture_to,
+    );
+}
+
+fn log_summary(summary: &Summary) {
+    info!(
+        "minute {}–{}: lights {:.2} on average ({:.2}–{:.2}), {} step(s); \
+         {} position update(s) (longest gap {:.1} s), {} jump(s), {} nudge(s) (largest {:+.2} s); \
+         {} frames, {} stall(s) (longest {:.2} s)",
+        timecode(summary.film_from),
+        timecode(summary.film_to),
+        summary.lights_mean,
+        summary.lights_min,
+        summary.lights_max,
+        summary.steps,
+        summary.updates,
+        summary.longest_between_updates,
+        summary.jumps,
+        summary.nudges,
+        summary.largest_error,
+        summary.frames,
+        summary.stalls,
+        summary.longest_frame,
+    );
+}
+
+/// A film position with tenths, to find a step in the film: 12:34.5.
+fn timecode_tenths(seconds: f64) -> String {
+    let tenths = (seconds.max(0.0) * 10.0).round() as u64;
+    format!("{}.{}", timecode((tenths / 10) as f64), tenths % 10)
 }
 
 /// A film position as the players show it: 12:34, or 1:02:03.
@@ -424,7 +498,7 @@ fn hue_to_rgb(h: f32) -> Rgb {
 
 #[cfg(test)]
 mod tests {
-    use super::timecode;
+    use super::{timecode, timecode_tenths};
 
     #[test]
     fn timecodes_read_like_a_player() {
@@ -432,5 +506,7 @@ mod tests {
         assert_eq!(timecode(754.4), "12:34");
         assert_eq!(timecode(3723.0), "1:02:03");
         assert_eq!(timecode(-3.0), "0:00");
+        assert_eq!(timecode_tenths(754.46), "12:34.5");
+        assert_eq!(timecode_tenths(59.96), "1:00.0");
     }
 }
