@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/mathieuletyrant/lueur/compare/v0.4.0...v0.5.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **web:** GPU / CPU badge on running analyses ([dd3b1f2](https://github.com/mathieuletyrant/lueur/commit/dd3b1f2696354b86ba0561fb69b449ddac3ddf26))
+
+
+### 🐛 Fixes
+
+* **analyze:** decode AV1 on the GPU, run ffmpeg at the lowest priority ([e714ce3](https://github.com/mathieuletyrant/lueur/commit/e714ce32456c59f1699dd04f6cc34e627cef144f))
+
 ## [0.4.0](https://github.com/mathieuletyrant/lueur/compare/v0.3.0...v0.4.0) (2026-11-02)
 
 
