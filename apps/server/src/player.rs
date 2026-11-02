@@ -154,6 +154,18 @@ pub struct Live {
     pub status: Mutex<Status>,
 }
 
+impl Live {
+    /// Publishes what the lights show (black when `colors` misses a channel).
+    pub fn set_streaming(&self, on: bool, colors: &[(u8, Rgb)]) {
+        let mut st = self.status.lock().unwrap();
+        st.streaming = on;
+        for ch in st.channels.iter_mut() {
+            let c = colors.iter().find(|c| c.0 == ch.id).map(|c| c.1).unwrap_or_default();
+            ch.color = c.map(|v| (linear_to_srgb(v) * 255.0).round() as u8);
+        }
+    }
+}
+
 pub struct Player {
     cfg: Config,
     bridge: Arc<Bridge>,
@@ -415,18 +427,18 @@ impl Player {
     }
 
     fn set_streaming(&self, on: bool, colors: &[(u8, Rgb)]) {
-        let mut st = self.status();
-        st.streaming = on;
-        for ch in st.channels.iter_mut() {
-            let c = colors.iter().find(|c| c.0 == ch.id).map(|c| c.1).unwrap_or_default();
-            ch.color = c.map(|v| (linear_to_srgb(v) * 255.0).round() as u8);
-        }
+        self.live.set_streaming(on, colors);
     }
 }
 
-/// Test pattern: a rainbow rotating across the area's channels, or with
-/// `only`, that channel blinking white and the others off (to find a light).
-pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Result<()> {
+/// Opens the area's stream outside of playback and sends `colors(area, t)`
+/// at 50 Hz until `stop()` or `seconds` pass (test pattern, still frame).
+pub async fn stream_for(
+    cfg: &Config,
+    seconds: f32,
+    stop: impl Fn() -> bool,
+    mut colors: impl FnMut(&Area, f32) -> Vec<(u8, Rgb)>,
+) -> Result<()> {
     let creds = Credentials { username: cfg.hue.username.clone(), clientkey: cfg.hue.clientkey.clone() };
     let bridge = Bridge::new(&cfg.hue.bridge, creds.clone(), cfg.hue.base_url.as_deref());
     let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
@@ -437,25 +449,50 @@ pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Resul
         tokio::task::spawn_blocking(move || Stream::connect(&addr, &creds, &id)).await?.context("DTLS connection")?;
     let start = Instant::now();
     let mut tick = tokio::time::interval(FRAME);
-    let n = area.channels.len().max(1) as f32;
-    while start.elapsed().as_secs_f32() < seconds {
+    let mut res = Ok(());
+    while start.elapsed().as_secs_f32() < seconds && !stop() {
         tick.tick().await;
-        let t = start.elapsed().as_secs_f32();
-        let colors: Vec<(u8, Rgb)> = area
-            .channels
-            .iter()
-            .enumerate()
-            .map(|(i, ch)| match only {
-                Some(id) if id == ch.channel_id && t.fract() < 0.6 => (id, [1.0; 3]),
-                Some(_) => (ch.channel_id, [0.0; 3]),
-                None => (ch.channel_id, hue_to_rgb(t * 0.25 + i as f32 / n)),
-            })
-            .collect();
-        stream.send(&colors)?;
+        if let Err(e) = stream.send(&colors(&area, start.elapsed().as_secs_f32())) {
+            res = Err(e);
+            break;
+        }
     }
     stream.close();
     bridge.set_streaming(&area.id, false).await?;
-    Ok(())
+    res
+}
+
+/// Test pattern: a rainbow rotating across the area's channels, or with
+/// `only`, that channel blinking white and the others off (to find a light).
+pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Result<()> {
+    stream_for(
+        cfg,
+        seconds,
+        || false,
+        |area, t| {
+            let n = area.channels.len().max(1) as f32;
+            area.channels
+                .iter()
+                .enumerate()
+                .map(|(i, ch)| match only {
+                    Some(id) if id == ch.channel_id && t.fract() < 0.6 => (id, [1.0; 3]),
+                    Some(_) => (ch.channel_id, [0.0; 3]),
+                    None => (ch.channel_id, hue_to_rgb(t * 0.25 + i as f32 / n)),
+                })
+                .collect()
+        },
+    )
+    .await
+}
+
+/// The colors the area shows for a Track at `t` seconds, with `look` applied.
+pub fn still_colors(area: &Area, track: &Track, t: f64, look: &Look) -> Vec<(u8, Rgb)> {
+    let mut grid = Vec::new();
+    let mut colors = Vec::new();
+    track.sample(t, &mut grid);
+    Mapping::new(&area.channels, track.cols, track.rows, look).colors(&grid, &mut colors);
+    colors.iter_mut().for_each(|c| c.1 = look.apply(c.1));
+    colors
 }
 
 fn hue_to_rgb(h: f32) -> Rgb {

@@ -140,18 +140,20 @@ pub fn track_path(store: &Path, video: &Path) -> PathBuf {
 
 /// A track exists and still matches the file (same size).
 pub fn is_fresh(store: &Path, video: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(video) else {
-        return false;
-    };
-    let p = track_path(store, video);
-    let Ok(mut f) = std::fs::File::open(&p) else {
-        return false;
-    };
+    fresh_duration(store, video).is_some()
+}
+
+/// Duration in seconds of the video's track, when it is up to date (header only).
+pub fn fresh_duration(store: &Path, video: &Path) -> Option<f64> {
+    let meta = std::fs::metadata(video).ok()?;
     let mut head = [0u8; 24];
-    if f.read_exact(&mut head).is_err() || &head[..5] != MAGIC {
-        return false;
+    std::fs::File::open(track_path(store, video)).ok()?.read_exact(&mut head).ok()?;
+    if &head[..5] != MAGIC || u64::from_le_bytes(head[16..24].try_into().ok()?) != meta.len() {
+        return None;
     }
-    u64::from_le_bytes(head[16..24].try_into().unwrap()) == meta.len()
+    let fps = f32::from_le_bytes(head[6..10].try_into().ok()?);
+    let frames = u32::from_le_bytes(head[12..16].try_into().ok()?);
+    (fps > 0.0).then(|| frames as f64 / fps as f64)
 }
 
 #[cfg(test)]

@@ -30,6 +30,9 @@ struct App {
     reload: Notify,
     stopping: AtomicBool,
     last_scan: Mutex<Option<LastScan>>,
+    hold: Mutex<Option<Hold>>,
+    /// A still frame is being streamed.
+    holding: AtomicBool,
 }
 
 #[derive(Clone, Serialize)]
@@ -112,6 +115,8 @@ pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> 
         reload: Notify::new(),
         stopping: AtomicBool::new(false),
         last_scan: Mutex::new(None),
+        hold: Mutex::new(None),
+        holding: AtomicBool::new(false),
     });
     let sup = tokio::spawn(supervise(app.clone()));
     tokio::spawn(auto_scan(app.clone()));
@@ -131,6 +136,8 @@ pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> 
         .route("/api/scan/stop", post(stop))
         .route("/api/videos", get(videos))
         .route("/api/analyze", post(analyze))
+        .route("/api/frame", get(frame))
+        .route("/api/hold", axum::routing::put(put_hold).delete(delete_hold))
         .route("/api/fs", get(fs))
         .fallback(web)
         .with_state(app.clone());
@@ -235,7 +242,8 @@ async fn patch_config(State(app): State<Arc<App>>, Json(patch): Json<Value>) -> 
 async fn status(State(app): State<Arc<App>>) -> Res {
     let player = app.live.status.lock().unwrap().clone();
     let last_scan = app.last_scan.lock().unwrap().clone();
-    Ok(Json(json!({ "player": player, "queue": app.queue.snapshot(), "last_scan": last_scan })))
+    let hold = app.hold.lock().unwrap().clone();
+    Ok(Json(json!({ "player": player, "queue": app.queue.snapshot(), "last_scan": last_scan, "hold": hold })))
 }
 
 async fn bridges() -> Res<Vec<hue::Found>> {
@@ -402,6 +410,8 @@ struct Video {
     folder: String,
     path: PathBuf,
     analyzed: bool,
+    /// Seconds, when analyzed.
+    duration: Option<f64>,
     /// "running" or "queued".
     state: Option<&'static str>,
 }
@@ -424,6 +434,7 @@ async fn videos(State(app): State<Arc<App>>) -> Res<Vec<Video>> {
                         .and_then(|p| p.strip_prefix(&l.path).ok())
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default(),
+                    duration: track::fresh_duration(&cfg.store, &f),
                     analyzed: track::is_fresh(&cfg.store, &f),
                     state: if running.contains(&f) {
                         Some("running")
@@ -449,12 +460,102 @@ struct AnalyzeReq {
 
 /// Analyzes one video next, even when its Track is up to date.
 async fn analyze(State(app): State<Arc<App>>, Json(r): Json<AnalyzeReq>) -> Res {
-    // Only files inside a Library: the API has no auth.
-    let inside = app.config().libraries.iter().any(|l| r.path.starts_with(&l.path));
-    if !inside || !r.path.is_file() || r.path.components().any(|c| c == std::path::Component::ParentDir) {
-        return Err(bad("not a video of a Library"));
-    }
+    app.library_video(&r.path)?;
     Ok(Json(json!({ "queued": app.queue.push_front(r.path) })))
+}
+
+impl App {
+    /// Only files inside a Library: the API has no auth.
+    fn library_video(&self, p: &Path) -> Result<(), ApiError> {
+        let inside = self.config().libraries.iter().any(|l| p.starts_with(&l.path));
+        if !inside || !p.is_file() || p.components().any(|c| c == std::path::Component::ParentDir) {
+            return Err(bad("not a video of a Library"));
+        }
+        Ok(())
+    }
+
+    fn film_playing(&self) -> bool {
+        self.live.status.lock().unwrap().playing.as_ref().is_some_and(|p| p.has_track && !p.paused)
+    }
+}
+
+#[derive(Deserialize)]
+struct FrameQuery {
+    path: PathBuf,
+    t: f64,
+}
+
+/// One frame of a video, as a JPEG (to pick a moment to hold on the lights).
+async fn frame(State(app): State<Arc<App>>, Query(q): Query<FrameQuery>) -> Result<Response, ApiError> {
+    app.library_video(&q.path)?;
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("nice")
+            .args(["-n", "19", "ffmpeg", "-v", "error", "-ss", &format!("{:.2}", q.t.max(0.0)), "-i"])
+            .arg(&q.path)
+            .args(["-map", "0:V:0", "-frames:v", "1", "-vf", "scale=960:-2", "-f", "mjpeg", "pipe:1"])
+            .output()
+    })
+    .await??;
+    if out.stdout.is_empty() {
+        return Err(bad(format!("no frame: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    Ok(([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=3600")], out.stdout).into_response())
+}
+
+/// A moment of a video shown on the lights, to tune the Look in front of them.
+#[derive(Clone, Deserialize, Serialize)]
+struct Hold {
+    path: PathBuf,
+    t: f64,
+}
+
+/// Holds a frame on the lights (or moves the held frame) until DELETE, a
+/// film starting, or 10 minutes.
+async fn put_hold(State(app): State<Arc<App>>, Json(h): Json<Hold>) -> Res {
+    app.library_video(&h.path)?;
+    if !track::is_fresh(&app.config().store, &h.path) {
+        return Err(bad("analyze this video first"));
+    }
+    if app.film_playing() {
+        return Err(ApiError(StatusCode::CONFLICT, "a film is playing".into()));
+    }
+    app.bridge()?;
+    *app.hold.lock().unwrap() = Some(h);
+    if app.holding.swap(true, Ordering::SeqCst) {
+        return Ok(Json(json!({})));
+    }
+    let app = app.clone();
+    tokio::spawn(async move {
+        let cfg = app.config();
+        let mut cache: Option<(PathBuf, track::Track)> = None;
+        let stop = || app.hold.lock().unwrap().is_none() || app.film_playing();
+        let res = player::stream_for(&cfg, 600.0, stop, |area, _| {
+            let Some(h) = app.hold.lock().unwrap().clone() else { return vec![] };
+            if cache.as_ref().is_none_or(|c| c.0 != h.path) {
+                match track::Track::load(&track::track_path(&cfg.store, &h.path)) {
+                    Ok(t) => cache = Some((h.path.clone(), t)),
+                    Err(_) => return vec![],
+                }
+            }
+            let look = app.live.look.lock().unwrap().clone();
+            let colors = player::still_colors(area, &cache.as_ref().unwrap().1, h.t, &look);
+            app.live.set_streaming(true, &colors);
+            colors
+        })
+        .await;
+        if let Err(e) = res {
+            warn!("still frame: {e:#}");
+        }
+        *app.hold.lock().unwrap() = None;
+        app.live.set_streaming(false, &[]);
+        app.holding.store(false, Ordering::SeqCst);
+    });
+    Ok(Json(json!({})))
+}
+
+async fn delete_hold(State(app): State<Arc<App>>) -> Res {
+    *app.hold.lock().unwrap() = None;
+    Ok(Json(json!({})))
 }
 
 #[derive(Deserialize)]
