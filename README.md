@@ -12,7 +12,7 @@ No Sync Box, no PC, no Hue Sync app: each film is analyzed once, then your light
 ![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=black)
 ![Umbrel](https://img.shields.io/badge/Umbrel-community%20app-5351fb)
 
-<img src="docs/screenshots/now.jpg" alt="Now playing: the film, and each light of the entertainment area with its live color" />
+<img src="docs/screenshots/now.jpg" alt="Now playing: the film, the sync offset, and each light of the entertainment area with its live color" />
 
 </div>
 
@@ -45,7 +45,7 @@ No Sync Box, no PC, no Hue Sync app: each film is analyzed once, then your light
 
 <table>
   <tr>
-    <td width="68%"><img src="docs/screenshots/library.jpg" alt="Library: analyzed films and episodes, queue" /></td>
+    <td width="68%"><img src="docs/screenshots/library.jpg" alt="Library: analyzed films and episodes with their barcodes, and the queue" /></td>
     <td width="32%"><img src="docs/screenshots/mobile.jpg" alt="Now playing on a phone" /></td>
   </tr>
 </table>
@@ -94,7 +94,7 @@ The image is amd64, tagged `latest`, `x.y` and `x.y.z`. `--device /dev/dri` is o
 2. In lueur → Setup, pick your bridge and press its link button.
 3. Lights late or early on cuts? Use **Sync offset** on the Now page (±0.1 s buttons).
 
-<img src="docs/screenshots/look.jpg" alt="Look: brightness, saturation, smoothing and sync offset with a live preview" />
+<img src="docs/screenshots/look.jpg" alt="Look: test on a frame of a film, brightness, saturation, warm greys and a live preview" />
 
 ## 🛠️ Develop
 
