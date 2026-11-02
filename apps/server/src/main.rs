@@ -1,4 +1,5 @@
 mod analyze;
+mod clock;
 mod color;
 mod config;
 mod hue;

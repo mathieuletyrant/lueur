@@ -1,10 +1,11 @@
 //! Main loop: follows Jellyfin, loads the track of the current film and
 //! streams colors to the entertainment area at 50 frames per second.
 
+use crate::clock::PlaybackClock;
 use crate::color::{Look, Rgb, linear_to_srgb};
 use crate::config::Config;
 use crate::hue::{Area, Bridge, Stream};
-use crate::jellyfin::{Clock, ClockEvent, Jellyfin, NowPlaying};
+use crate::jellyfin::{Jellyfin, NowPlaying};
 use crate::queue::Queue;
 use crate::render::Renderer;
 use crate::track::{self, Track};
@@ -166,7 +167,6 @@ impl Player {
             &self.cfg.jellyfin.url,
             &self.cfg.jellyfin.api_key,
             self.cfg.jellyfin.device.clone(),
-            self.cfg.sync.learn_report_delay,
         ));
         let (tx, mut rx) = watch::channel::<Option<NowPlaying>>(None);
         let poller = {
@@ -211,7 +211,7 @@ impl Player {
             })
         };
 
-        let mut clock = Clock::new(self.cfg.sync.jump_ms / 1000.0, self.cfg.sync.drift_ms / 1000.0);
+        let mut clock = PlaybackClock::new(&self.cfg.sync);
         let mut current: Option<(String, Option<Arc<Track>>)> = None;
         let mut session: Option<Session> = None;
         let mut retry_at = Instant::now();
@@ -242,8 +242,8 @@ impl Player {
                             info!("playing: \"{}\" on {}", np.name, np.device);
                             current = Some((np.item_id.clone(), self.load_track(np)));
                         }
-                        if let ClockEvent::Jump = clock.update(np) {
-                            tracing::debug!("clock re-synced to {:.2} s", np.position);
+                        if clock.report(np) {
+                            tracing::debug!("clock re-synced to {:.2} s", clock.position(np.at).unwrap_or_default());
                         }
                         paused_since = if np.paused { paused_since.or(Some(now)) } else { None };
                     }
@@ -257,11 +257,11 @@ impl Player {
                 st.playing = np.map(|np| Playing {
                     title: np.name,
                     device: np.device,
-                    position: np.position,
+                    position: clock.position(np.at).unwrap_or_default(),
                     duration: current.as_ref().and_then(|c| c.1.as_ref()).map(|t| t.duration()),
                     paused: np.paused,
                     has_track: current.as_ref().is_some_and(|c| c.1.is_some()),
-                    report_delay: np.report_delay,
+                    report_delay: clock.report_delay(),
                     exposure: None,
                 });
             }
@@ -310,7 +310,7 @@ impl Player {
             }
 
             let track = playable.unwrap();
-            let Some(pos) = clock.now() else { continue };
+            let Some(pos) = clock.position(now) else { continue };
             let look = self.live.look.lock().unwrap().clone();
             let colors = renderer.colors(&track, pos + look.offset_ms / 1000.0, &look, dt);
             self.set_streaming(true, colors);

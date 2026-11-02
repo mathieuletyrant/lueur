@@ -107,7 +107,7 @@ impl App {
         if j.url.is_empty() {
             return Err(bad("Jellyfin not configured"));
         }
-        Ok(Jellyfin::new(&j.url, &j.api_key, None, false))
+        Ok(Jellyfin::new(&j.url, &j.api_key, None))
     }
 }
 
