@@ -45,7 +45,7 @@ export type Status = {
   };
   queue: {
     jobs: number;
-    running: { name: string; progress: number | null }[];
+    running: { name: string; progress: number | null; cpu: boolean }[];
     pending: number;
     next: string[];
     done: number;

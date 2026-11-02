@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Clock, Film, FolderSearch, Library, Loader2, RotateCcw, ScanLine, Search, Square } from "lucide-react";
 import { api, useLoad, type Video } from "../api";
 import { useApp } from "../App";
-import { Alert, Button, Card, CardHeader, cx, Empty, Input, PageHeader, Pill, Progress, Toggle } from "../ui";
+import { Alert, Button, Card, CardHeader, cx, Empty, Input, PageHeader, Pill, Progress, Toggle, Decoder } from "../ui";
 
 export function LibraryView() {
   const { cfg, status, patch, go } = useApp();
@@ -136,6 +136,7 @@ export function LibraryView() {
                       <span className="flex min-w-0 items-center gap-2">
                         <Loader2 className="size-3.5 shrink-0 animate-spin text-glow-1" />
                         <span className="truncate">{r.name}</span>
+                        <Decoder cpu={r.cpu} />
                       </span>
                       <span className="text-xs text-zinc-500 tabular-nums">
                         {r.progress !== null ? `${Math.round(r.progress * 100)}%` : "…"}

@@ -202,3 +202,18 @@ export function time(s: number) {
   const ss = String(s % 60).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
+
+/** Where an Analysis decodes: the GPU (fast, light) or the CPU (slow, heavier on the server). */
+export function Decoder({ cpu }: { cpu: boolean }) {
+  return (
+    <span
+      title={cpu ? "Decoding on the CPU: slower, uses more of the server" : "Decoding on the GPU"}
+      className={cx(
+        "shrink-0 rounded px-1.5 py-px text-[10px] font-semibold tracking-wide ring-1 ring-inset",
+        cpu ? "bg-amber-400/10 text-amber-300 ring-amber-400/20" : "bg-emerald-400/10 text-emerald-300 ring-emerald-400/20",
+      )}
+    >
+      {cpu ? "CPU" : "GPU"}
+    </span>
+  );
+}

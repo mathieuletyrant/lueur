@@ -3,7 +3,7 @@ import { ArrowRight, Clapperboard, Loader2, Pause, Rainbow, Sparkles, Tv } from 
 import { api } from "../api";
 import { setupSteps, useApp } from "../App";
 import { AreaView } from "../components/AreaView";
-import { Alert, Button, Card, CardHeader, Empty, Pill, Progress, rgb, time } from "../ui";
+import { Alert, Button, Card, CardHeader, Empty, Pill, Progress, rgb, time, Decoder } from "../ui";
 
 export function Now() {
   const { cfg, status, go } = useApp();
@@ -189,6 +189,7 @@ function QueueCard() {
                   <span className="flex min-w-0 items-center gap-2">
                     <Loader2 className="size-3.5 shrink-0 animate-spin text-glow-1" />
                     <span className="truncate">{r.name}</span>
+                    <Decoder cpu={r.cpu} />
                   </span>
                   {r.progress !== null && <span className="text-xs text-zinc-500 tabular-nums">{Math.round(r.progress * 100)}%</span>}
                 </div>
