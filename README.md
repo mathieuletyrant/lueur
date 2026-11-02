@@ -10,6 +10,18 @@ Synchronise des lampes Philips Hue avec les films lus sur Jellyfin, depuis un se
 
 Au moment du film, la charge est quasi nulle : aucun décodage, juste une lecture dans la piste.
 
+## Installation
+
+Il faut Rust, ffmpeg et OpenSSL. Sur macOS :
+
+```sh
+brew install rust ffmpeg openssl@3
+git clone https://github.com/mathieuletyrant/lueur && cd lueur
+OPENSSL_DIR="$(brew --prefix openssl@3)" cargo build --release
+```
+
+Le binaire est dans `target/release/lueur`. Sur macOS, l'analyse décode avec VideoToolbox.
+
 ## Utilisation
 
 ```sh

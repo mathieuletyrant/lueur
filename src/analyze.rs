@@ -22,6 +22,8 @@ pub enum HwAccel {
     Vaapi,
     /// Intel Quick Sync.
     Qsv,
+    /// VideoToolbox (macOS).
+    Videotoolbox,
     /// Décodage logiciel.
     None,
 }
@@ -42,6 +44,7 @@ pub struct Stats {
 
 pub fn analyze(video: &Path, opts: &Options) -> Result<(Track, Stats)> {
     let hw = match opts.hwaccel {
+        HwAccel::Auto if cfg!(target_os = "macos") => HwAccel::Videotoolbox,
         HwAccel::Auto if Path::new(RENDER_NODE).exists() => HwAccel::Vaapi,
         HwAccel::Auto => HwAccel::None,
         other => other,
@@ -68,6 +71,11 @@ fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel) -> Vec<String> {
         HwAccel::Qsv => {
             a.extend(["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"].map(String::from));
             format!("fps={fps},vpp_qsv=w={SAMPLE_W}:h={SAMPLE_H}:format=nv12,hwdownload,format=nv12")
+        }
+        HwAccel::Videotoolbox => {
+            // Décodage sur le GPU du Mac, images rapatriées puis réduites (coût négligeable).
+            a.extend(["-hwaccel", "videotoolbox"].map(String::from));
+            format!("fps={fps},scale={SAMPLE_W}:{SAMPLE_H}:flags=area")
         }
         _ => {
             // Image finale minuscule : le filtre de boucle ne sert à rien et coûte cher.
