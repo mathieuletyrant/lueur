@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/mathieuletyrant/lueur/compare/v0.14.1...v0.14.2) (2026-11-02)
+
+
+### 🐛 Fixes
+
+* **web:** the area view as an ambilight, without hard-edged glows ([2ac87f9](https://github.com/mathieuletyrant/lueur/commit/2ac87f94fdcd83fac643a4fc39874ec5ff7a6930))
+
 ## [0.14.1](https://github.com/mathieuletyrant/lueur/compare/v0.14.0...v0.14.1) (2026-11-02)
 
 
