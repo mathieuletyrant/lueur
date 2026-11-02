@@ -4,7 +4,7 @@ import { type Look, useDebounced } from "../../api";
 import { useApp } from "../../context";
 import { Alert, Button, Card, PageHeader, Slider, SwitchRow } from "../../ui";
 import { FrameTest } from "./FrameTest";
-import { LookPreview } from "./LookPreview";
+import { Presets } from "./Presets";
 
 const DEFAULT: Look = {
   brightness: 1,
@@ -111,7 +111,7 @@ export function LookView() {
           </div>
         </Card>
 
-        <LookPreview look={look} />
+        <Presets look={look} onPick={(values) => set({ ...look, ...values })} />
       </div>
     </div>
   );

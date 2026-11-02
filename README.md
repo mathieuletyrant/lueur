@@ -39,7 +39,7 @@ No Sync Box, no PC, no Hue Sync app: each film is analyzed once, then your light
 **App**
 
 - 🧭 **Guided setup**: bridge discovery and pairing, entertainment area, Jellyfin, libraries
-- 🎚️ **Live look**: brightness, saturation, minimum brightness, smoothing and sync offset, applied during the film
+- 🎚️ **Live look**: intensity presets from *Subtle* to *Intense*, then brightness, saturation, smoothing, spread and warm greys, applied during the film
 - 💡 **Find a light**: click one in the area view and it blinks
 - 🐳 **One container**: a single Rust binary serves the player, the API and the UI
 
@@ -94,7 +94,7 @@ The image is amd64, tagged `latest`, `x.y` and `x.y.z`. `--device /dev/dri` is o
 2. In lueur → Setup, pick your bridge and press its link button.
 3. Lights late or early on cuts? Use **Sync offset** on the Now page (±0.1 s buttons).
 
-<img src="docs/screenshots/look.jpg" alt="Look: test on a frame of a film, brightness, saturation, warm greys and a live preview" />
+<img src="docs/screenshots/look.jpg" alt="Look: test on a frame of a film, intensity presets and the sliders" />
 
 ## 🛠️ Develop
 
