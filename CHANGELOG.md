@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/mathieuletyrant/lueur/compare/v0.5.0...v0.6.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **server:** extract a frame of a video and hold it on the lights ([658b1f4](https://github.com/mathieuletyrant/lueur/commit/658b1f4fa84f95dc5983b76966314c25775a0294))
+* **web:** test the Look on a frame of a film, held on the lights ([1b04031](https://github.com/mathieuletyrant/lueur/commit/1b04031b16ed68149d487b186e10508bd1048e94))
+
 ## [0.5.0](https://github.com/mathieuletyrant/lueur/compare/v0.4.0...v0.5.0) (2026-11-02)
 
 
