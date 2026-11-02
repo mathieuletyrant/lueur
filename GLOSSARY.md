@@ -46,6 +46,14 @@ _Avoid_: Scan, processing, indexing
 The precomputed sequence of small color grids for one video file.
 _Avoid_: Color file, profile
 
+**Barcode**:
+A film's colors from start to end, one thin stripe per stretch of the Track.
+_Avoid_: Timeline, color strip
+
+**Exposure**:
+The brightness gain that lifts a dark film to a usual level, measured on its Track.
+_Avoid_: Auto brightness, gain
+
 **Store**:
 The folder holding all Tracks.
 _Avoid_: Cache, library

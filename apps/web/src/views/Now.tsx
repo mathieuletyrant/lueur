@@ -84,6 +84,12 @@ function NowPlaying() {
             <h2 className="text-3xl font-semibold tracking-tight text-balance text-white md:text-4xl">{np.title}</h2>
             <p className="mt-2 flex items-center gap-2 text-sm text-zinc-300">
               <Tv className="size-4 opacity-70" /> {np.device}
+              {np.exposure != null && np.exposure > 1.05 && (
+                <>
+                  <span className="text-zinc-600">·</span>
+                  <span title="Auto exposure: this film is dark, the lights are brightened">Brightened ×{np.exposure.toFixed(1)}</span>
+                </>
+              )}
               {np.paused && (
                 <>
                   <span className="text-zinc-600">·</span>
@@ -249,44 +255,67 @@ function SyncCard() {
       </div>
 
       <details className="group mt-2 border-t border-white/[0.06] pt-3">
-        <summary className="cursor-pointer list-none text-xs font-medium text-zinc-400 hover:text-zinc-200">
-          <span className="inline-block transition group-open:rotate-90">›</span> Advanced
+        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-400 hover:text-zinc-200">
+          <span className="inline-block font-medium transition group-open:rotate-90">›</span>
+          <span className="font-medium">How lueur follows the film</span>
+          <span className="text-zinc-600">
+            {sync.learn_report_delay ? (delay != null ? `app delay ${delay.toFixed(1)} s corrected` : "app delay: learning") : "app delay ignored"}
+            {` · ignores gaps < ${(sync.drift_ms / 1000).toFixed(2)} s · jumps > ${(sync.jump_ms / 1000).toFixed(2)} s`}
+          </span>
         </summary>
-        <div className="mt-4 grid gap-6 md:grid-cols-3">
+        <div className="mt-5 space-y-6">
           <SwitchRow
-            label="Learn each app's report delay"
+            label="Correct the app's late reports"
             hint={
               <>
-                Some apps tell Jellyfin their position late. lueur measures it on each report and corrects the first
-                seconds after a play or a seek.
-                {delay != null && ` Measured for this app: ${delay.toFixed(1)} s.`}
+                Some Jellyfin apps send their position a few seconds late. lueur measures that delay on each report and
+                takes it into account right after you press play or seek.
+                {delay != null && <strong className="font-medium text-zinc-300"> This app: {delay.toFixed(1)} s late.</strong>}
               </>
             }
             checked={sync.learn_report_delay}
             onChange={(v) => setS({ learn_report_delay: v })}
           />
-          <Slider
-            id="sync-jump"
-            label="Re-sync after"
-            display={`${(sync.jump_ms / 1000).toFixed(2)} s`}
-            value={sync.jump_ms}
-            min={250}
-            max={3000}
-            step={50}
-            onChange={(v) => setS({ jump_ms: v })}
-            hint="A gap this large moves the lights at once. Lower: snappier after a seek, but may twitch with an app that reports unevenly."
-          />
-          <Slider
-            id="sync-drift"
-            label="Correct drifts above"
-            display={`${(sync.drift_ms / 1000).toFixed(2)} s`}
-            value={sync.drift_ms}
-            min={0}
-            max={1000}
-            step={25}
-            onChange={(v) => setS({ drift_ms: v })}
-            hint="Smaller gaps are corrected gently, without a visible jump."
-          />
+          <div>
+            <p className="text-sm font-medium">When the lights drift from the film</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              Each report from Jellyfin tells where the film really is. Depending on how far off the lights are:
+            </p>
+            {/* The three zones, to scale up to 3 s. */}
+            <div className="mt-3 flex h-7 overflow-hidden rounded-lg text-[11px] font-medium">
+              <span className="grid place-items-center bg-white/[0.05] text-zinc-400" style={{ width: `${(sync.drift_ms / 3000) * 100}%` }}>
+                {sync.drift_ms >= 300 && "ignored"}
+              </span>
+              <span className="grid place-items-center bg-sky-400/15 text-sky-200" style={{ width: `${((sync.jump_ms - sync.drift_ms) / 3000) * 100}%` }}>
+                caught up smoothly
+              </span>
+              <span className="grid flex-1 place-items-center bg-amber-400/15 text-amber-200">jump at once</span>
+            </div>
+            <div className="mt-5 grid gap-6 md:grid-cols-2">
+              <Slider
+                id="sync-drift"
+                label="Ignore gaps under"
+                display={`${(sync.drift_ms / 1000).toFixed(2)} s`}
+                value={sync.drift_ms}
+                min={0}
+                max={1000}
+                step={25}
+                onChange={(v) => setS({ drift_ms: Math.min(v, sync.jump_ms - 50) })}
+                hint="Too small to see: left alone. Raise it if the lights wobble slightly."
+              />
+              <Slider
+                id="sync-jump"
+                label="Jump when off by more than"
+                display={`${(sync.jump_ms / 1000).toFixed(2)} s`}
+                value={sync.jump_ms}
+                min={250}
+                max={3000}
+                step={50}
+                onChange={(v) => setS({ jump_ms: Math.max(v, sync.drift_ms + 50) })}
+                hint="After a seek, the lights jump straight to the right moment. Lower: they jump sooner; too low and an app that reports unevenly makes them twitch."
+              />
+            </div>
+          </div>
         </div>
       </details>
       {error && <div className="mt-3"><Alert>{error}</Alert></div>}

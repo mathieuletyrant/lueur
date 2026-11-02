@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, Clock, Film, Library, Loader2, RotateCcw, Sc
 import { api, useLoad, type Video } from "../api";
 import { useApp } from "../App";
 import { analysisSummary, hh, toLocal } from "./Analysis";
+import { Barcode } from "../components/Barcode";
 import { Alert, Button, Card, CardHeader, Empty, Input, PageHeader, Pill, Progress, RunningAnalysis, Toggle } from "../ui";
 
 export function LibraryView() {
@@ -243,6 +244,7 @@ function Media() {
                     {v.library}
                     {v.folder && ` · ${v.folder}`}
                   </p>
+                  {v.duration != null && <Barcode path={v.path} duration={v.duration} className="mt-1.5 max-w-md" />}
                 </div>
                 {v.state === "running" ? (
                   <span className="flex w-28 items-center gap-2">

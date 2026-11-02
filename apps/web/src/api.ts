@@ -9,6 +9,8 @@ export type Look = {
   spread: number;
   fit_area: boolean;
   centered_smoothing: boolean;
+  auto_exposure: boolean;
+  warm_greys: number;
 };
 
 export type SyncConfig = { learn_report_delay: boolean; jump_ms: number; drift_ms: number };
@@ -48,6 +50,7 @@ export type Status = {
       paused: boolean;
       has_track: boolean;
       report_delay: number | null;
+      exposure: number | null;
     } | null;
   };
   queue: {
@@ -113,6 +116,9 @@ export const api = {
   stop: () => call<object>("POST", "scan/stop"),
   videos: () => call<Video[]>("GET", "videos"),
   frameUrl: (path: string, t: number) => `/api/frame?path=${encodeURIComponent(path)}&t=${t.toFixed(1)}`,
+  // The duration is in the URL so a new analysis isn't served from the browser cache.
+  barcode: (path: string, duration: number) =>
+    call<string[]>("GET", `barcode?path=${encodeURIComponent(path)}&d=${duration.toFixed(0)}`),
   hold: (path: string, t: number) => call<object>("PUT", "hold", { path, t }),
   unhold: () => call<object>("DELETE", "hold"),
   analyze: (path: string) => call<{ queued: boolean }>("POST", "analyze", { path }),
