@@ -507,13 +507,7 @@ function LibrariesStep({ done, locked }: { done: boolean; locked: boolean }) {
 
       {jf.data && jf.data.length > 0 && (
         <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-white/[0.06] pt-5">
-          <label className="flex items-center gap-3 text-sm">
-            <Toggle label="Analyze on first playback" checked={cfg.auto_analyze} onChange={(v) => patch({ auto_analyze: v })} />
-            <span>
-              Analyze on first playback
-              <span className="block text-xs text-zinc-500">A film played without a track is queued automatically.</span>
-            </span>
-          </label>
+          <p className="text-xs text-zinc-500">Automatic scans and analysis are set in Library.</p>
           <Button variant="primary" onClick={save} loading={saving} disabled={!dirty}>
             Save libraries
           </Button>

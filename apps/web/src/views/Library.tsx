@@ -25,7 +25,7 @@ export function LibraryView() {
     setError(undefined);
     try {
       const r = await api.scan();
-      setNote(r.queued ? `${r.queued} file${r.queued > 1 ? "s" : ""} queued for analysis` : "Everything is already analyzed");
+      setNote(r.queued ? `${r.queued} file${r.queued > 1 ? "s" : ""} queued for analysis` : "Nothing new to analyze");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -46,7 +46,7 @@ export function LibraryView() {
               </Button>
             )}
             <Button variant="primary" onClick={scan} loading={scanning} disabled={!cfg.libraries.length} icon={<ScanLine className="size-4" />}>
-              Scan now
+              Analyze missing
             </Button>
           </div>
         }
@@ -102,8 +102,6 @@ export function LibraryView() {
         </div>
       )}
 
-      {cfg.libraries.length > 0 && <Media />}
-
       <div className="mt-8 grid gap-5 lg:grid-cols-5">
         <Card className="lg:col-span-3">
           <CardHeader
@@ -158,35 +156,98 @@ export function LibraryView() {
               </ul>
             ) : (
               <Empty icon={<FolderSearch className="size-4" />} title="Nothing in the queue">
-                “Scan now” looks for films and episodes without a color track.
+                “Analyze missing” queues every film and episode without a color track.
               </Empty>
             )}
           </div>
         </Card>
 
-        <Card className="lg:col-span-2">
-          <CardHeader title="Failed" subtitle={q?.failed.length ? `${q.failed.length} file(s)` : "No failures"} />
-          <div className="px-5 pt-3 pb-5">
-            {q?.failed.length ? (
-              <ul className="space-y-3">
-                {q.failed.map((f, i) => (
-                  <li key={i} className="rounded-lg border border-rose-400/10 bg-rose-400/[0.04] px-3 py-2.5">
-                    <p className="truncate text-sm text-zinc-200">{f.name}</p>
-                    <p className="mt-0.5 line-clamp-2 font-mono text-xs text-rose-300/80" title={f.error}>{f.error}</p>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <Empty icon={<CheckCircle2 className="size-4" />} title="All good" />
-            )}
-          </div>
-        </Card>
+        <Automation />
       </div>
+
+      {!!q?.failed.length && (
+        <Card className="mt-5">
+          <CardHeader title="Failed" subtitle={`${q.failed.length} file(s)`} />
+          <ul className="grid gap-3 px-5 pt-3 pb-5 sm:grid-cols-2">
+            {q.failed.map((f, i) => (
+              <li key={i} className="rounded-lg border border-rose-400/10 bg-rose-400/[0.04] px-3 py-2.5">
+                <p className="truncate text-sm text-zinc-200">{f.name}</p>
+                <p className="mt-0.5 line-clamp-2 font-mono text-xs text-rose-300/80" title={f.error}>{f.error}</p>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {cfg.libraries.length > 0 && <Media />}
     </div>
   );
 }
 
-const SHOWN = 60;
+const INTERVALS = [
+  { m: 0, label: "Off" },
+  { m: 5, label: "5 min" },
+  { m: 15, label: "15 min" },
+  { m: 60, label: "1 h" },
+  { m: 360, label: "6 h" },
+];
+
+function ago(unix: number) {
+  const s = Math.max(0, Date.now() / 1000 - unix);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  return `${Math.floor(s / 3600)} h ago`;
+}
+
+/** When lueur analyzes on its own. */
+function Automation() {
+  const { cfg, status, patch } = useApp();
+  const last = status?.last_scan;
+  return (
+    <Card className="lg:col-span-2">
+      <CardHeader title="Automation" subtitle="New films get their track without you asking." />
+      <div className="space-y-5 px-5 pt-4 pb-5">
+        <div>
+          <p className="text-sm font-medium">Auto scan</p>
+          <p className="mt-0.5 text-xs text-zinc-500">Looks for new videos in your libraries.</p>
+          <div className="mt-3 flex rounded-lg border border-white/10 p-0.5" role="radiogroup" aria-label="Auto scan interval">
+            {INTERVALS.map(({ m, label }) => (
+              <button
+                key={m}
+                role="radio"
+                aria-checked={cfg.auto_scan_minutes === m}
+                onClick={() => patch({ auto_scan_minutes: m })}
+                className={cx(
+                  "h-7 flex-1 rounded-md text-xs font-medium whitespace-nowrap transition",
+                  cfg.auto_scan_minutes === m ? "bg-white/10 text-zinc-50" : "text-zinc-500 hover:text-zinc-200",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {last && (
+            <p className="mt-2 text-xs text-zinc-500">
+              Last {last.auto ? "auto " : ""}scan {ago(last.at)}: {last.queued} queued
+              {last.removed > 0 && `, ${last.removed} old track${last.removed > 1 ? "s" : ""} removed`}
+            </p>
+          )}
+        </div>
+        <label className="flex items-start justify-between gap-4 border-t border-white/[0.06] pt-5">
+          <span>
+            <span className="block text-sm font-medium">Analyze on first playback</span>
+            <span className="mt-0.5 block text-xs text-zinc-500">
+              A film played without a track is analyzed first; the lights join in when it is done.
+            </span>
+          </span>
+          <Toggle label="Analyze on first playback" checked={cfg.auto_analyze} onChange={(v) => patch({ auto_analyze: v })} />
+        </label>
+      </div>
+    </Card>
+  );
+}
+
+const SHOWN = 25;
 
 /** Every film and episode, to analyze one right away. */
 function Media() {
@@ -195,6 +256,7 @@ function Media() {
   const videos = useLoad(api.videos);
   const [query, setQuery] = useState("");
   const [missing, setMissing] = useState(false);
+  const [shown, setShown] = useState(SHOWN);
   const [error, setError] = useState<string>();
 
   // Follow the queue: a film starts, finishes or gets dropped.
@@ -247,7 +309,7 @@ function Media() {
         {videos.error && <div className="mt-3"><Alert>{videos.error}</Alert></div>}
 
         <ul className="mt-3 divide-y divide-white/[0.05]">
-          {list.slice(0, SHOWN).map((v) => {
+          {list.slice(0, shown).map((v) => {
             const running = q?.running.find((r) => v.state === "running" && v.path.endsWith(r.name));
             return (
               <li key={v.path} className="flex items-center gap-3 py-2.5">
@@ -284,10 +346,13 @@ function Media() {
         </ul>
         {videos.loading && !videos.data && <Loader2 className="mx-auto mt-4 size-4 animate-spin text-zinc-500" />}
         {videos.data && list.length === 0 && <p className="py-6 text-center text-sm text-zinc-500">No match</p>}
-        {list.length > SHOWN && (
-          <p className="pt-3 text-xs text-zinc-500">
-            {list.length - SHOWN} more, refine the search to see them.
-          </p>
+        {list.length > shown && (
+          <div className="flex items-center justify-between gap-3 pt-3">
+            <span className="text-xs text-zinc-500">{list.length - shown} more</span>
+            <Button variant="ghost" className="h-7 px-2.5 text-xs" onClick={() => setShown(shown + 50)}>
+              Show more
+            </Button>
+          </div>
         )}
       </div>
     </Card>

@@ -17,6 +17,7 @@ export type Config = {
   libraries: Library[];
   look: Look;
   auto_analyze: boolean;
+  auto_scan_minutes: number;
   jobs: number;
   paired: boolean;
   has_api_key: boolean;
@@ -48,7 +49,10 @@ export type Status = {
     done: number;
     failed: { name: string; error: string }[];
   };
+  last_scan: LastScan | null;
 };
+
+export type LastScan = { at: number; auto: boolean; queued: number; removed: number };
 
 export type Bridge = { ip: string; id: string | null; name: string | null; model: string | null };
 export type Area = {
@@ -93,7 +97,7 @@ export const api = {
   jellyfinDevices: () => call<string[]>("GET", "jellyfin/devices"),
   jellyfinLibraries: () => call<JellyfinLibrary[]>("GET", "jellyfin/libraries"),
   libraries: () => call<LibraryStats[]>("GET", "libraries"),
-  scan: () => call<{ queued: number }>("POST", "scan"),
+  scan: () => call<LastScan>("POST", "scan"),
   stop: () => call<object>("POST", "scan/stop"),
   videos: () => call<Video[]>("GET", "videos"),
   analyze: (path: string) => call<{ queued: boolean }>("POST", "analyze", { path }),
