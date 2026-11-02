@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/mathieuletyrant/lueur/compare/v0.10.0...v0.11.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **web:** analysis settings move to Settings, Library keeps the content ([f59a65f](https://github.com/mathieuletyrant/lueur/commit/f59a65fc1fb765b21f822fb124615fb4cce3b024))
+
 ## [0.10.0](https://github.com/mathieuletyrant/lueur/compare/v0.9.0...v0.10.0) (2026-11-02)
 
 
