@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/mathieuletyrant/lueur/compare/v0.3.0...v0.4.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **look:** spread and fit to area settings, applied live ([075e863](https://github.com/mathieuletyrant/lueur/commit/075e86307ebb6571fd48a170f74cf5eb80e0cc8a))
+* **server:** auto scan, orphan track cleanup, track picked up during playback ([eedf435](https://github.com/mathieuletyrant/lueur/commit/eedf435b20ce52358cbf3ffa7f536828fd0fa37d))
+* **web:** Automation card in Library, Analyze missing, reordered page ([b19082e](https://github.com/mathieuletyrant/lueur/commit/b19082e22fb849f5dad79e6394af7995f4d5ccf9))
+
+
+### 🐛 Fixes
+
+* **player:** stretch channel positions to the area and sample near each edge ([388efed](https://github.com/mathieuletyrant/lueur/commit/388efeda178d61b66a1a02783eaa24ac328e74f6))
+
 ## [0.3.0](https://github.com/mathieuletyrant/lueur/compare/v0.2.0...v0.3.0) (2026-11-02)
 
 
