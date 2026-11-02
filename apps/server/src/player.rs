@@ -27,21 +27,31 @@ pub struct Mapping {
 
 impl Mapping {
     /// Hue position: x from -1 (left) to 1 (right), z from -1 (floor) to 1 (ceiling).
-    /// Each channel takes a Gaussian average around the matching screen point.
+    /// Positions are stretched to the area's extent: lights (or the segments
+    /// of a gradient strip) grouped around the TV still reach the screen's
+    /// edges. Each channel takes a Gaussian average of the screen near its edge.
     pub fn new(channels: &[Channel], cols: u8, rows: u8) -> Self {
         let (cols, rows) = (cols as usize, rows as usize);
+        let fit = |vals: Vec<f32>| {
+            let (lo, hi) = vals.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+            // All on one line (a single row of lights): keep Hue's own scale.
+            move |v: f32| if hi - lo > 0.2 { (v - lo) / (hi - lo) } else { ((v + 1.0) / 2.0).clamp(0.0, 1.0) }
+        };
+        let fx = fit(channels.iter().map(|c| c.position.x).collect());
+        let fz = fit(channels.iter().map(|c| c.position.z).collect());
         let channels = channels
             .iter()
             .map(|ch| {
-                let u = ((ch.position.x + 1.0) / 2.0).clamp(0.0, 1.0);
-                let v = ((1.0 - ch.position.z) / 2.0).clamp(0.0, 1.0);
+                let u = fx(ch.position.x);
+                let v = 1.0 - fz(ch.position.z);
                 let mut w = Vec::new();
                 let mut total = 0.0;
                 for r in 0..rows {
                     for c in 0..cols {
                         let cu = (c as f32 + 0.5) / cols as f32;
                         let cv = (r as f32 + 0.5) / rows as f32;
-                        let d = ((cu - u) / 0.2).powi(2) + ((cv - v) / 0.35).powi(2);
+                        // ponytail: fixed spread, a Look setting if some setups want wider/narrower.
+                        let d = ((cu - u) / 0.15).powi(2) + ((cv - v) / 0.18).powi(2);
                         let k = (-0.5 * d).exp();
                         if k > 0.01 {
                             w.push((r * cols + c, k));
@@ -448,6 +458,32 @@ fn hue_to_rgb(h: f32) -> Rgb {
 mod tests {
     use super::*;
     use crate::hue::Position;
+
+    #[test]
+    fn strip_segments_around_the_tv_see_their_own_edge() {
+        // A gradient strip's segments, as the Hue app places them: close to the center.
+        let ch = |id, x, z| Channel { channel_id: id, position: Position { x, y: 0.0, z } };
+        let m = Mapping::new(
+            &[ch(0, -0.37, -0.47), ch(1, -0.37, -0.1), ch(2, -0.37, 0.27), ch(3, 0.0, 0.27), ch(6, 0.37, -0.47)],
+            16,
+            9,
+        );
+        // Screen: top third red, the rest blue on the left half and green on the right half.
+        let grid: Vec<Rgb> = (0..16 * 9)
+            .map(|i| match (i / 16, i % 16) {
+                (0..3, _) => [1.0, 0.0, 0.0],
+                (_, 0..8) => [0.0, 0.0, 1.0],
+                _ => [0.0, 1.0, 0.0],
+            })
+            .collect();
+        let mut out = Vec::new();
+        m.colors(&grid, &mut out);
+        let c = |id: u8| out.iter().find(|c| c.0 == id).unwrap().1;
+        assert!(c(0)[2] > 0.9, "bottom left is blue: {:?}", c(0));
+        assert!(c(2)[0] > 0.6, "top left is mostly red: {:?}", c(2));
+        assert!(c(3)[0] > 0.8, "top center is red: {:?}", c(3));
+        assert!(c(6)[1] > 0.9, "bottom right is green: {:?}", c(6));
+    }
 
     #[test]
     fn left_light_sees_left_of_screen() {
