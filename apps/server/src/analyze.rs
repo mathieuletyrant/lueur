@@ -41,6 +41,8 @@ pub struct Options {
     pub progress: Option<Arc<AtomicUsize>>,
     /// Set to stop the analysis early (it then fails with "stopped").
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Set when the analysis decodes on the CPU (no GPU, or a codec the GPU can't take).
+    pub on_cpu: Option<Arc<AtomicBool>>,
 }
 
 impl Options {
@@ -61,15 +63,33 @@ pub fn analyze(video: &Path, opts: &Options) -> Result<(Track, Stats)> {
         HwAccel::Auto => HwAccel::None,
         other => other,
     };
+    let cpu = |on: bool| {
+        if let Some(c) = &opts.on_cpu {
+            c.store(on, Ordering::Relaxed);
+        }
+    };
+    cpu(hw == HwAccel::None);
     match run(video, opts, hw) {
         Ok(r) => Ok(r),
         // Codec not supported by the GPU (or missing driver): fall back to software.
         Err(e) if hw != HwAccel::None && opts.hwaccel == HwAccel::Auto && !opts.cancelled() => {
-            tracing::warn!("hardware decoding failed ({e:#}), falling back to software");
+            let name = video.file_name().unwrap_or_default().to_string_lossy();
+            tracing::warn!("hardware decoding failed for {name} ({e:#}), falling back to software");
+            cpu(true);
             run(video, opts, HwAccel::None)
         }
         Err(e) => Err(e),
     }
+}
+
+/// Codec of the first real video stream (not a cover picture), from ffprobe.
+fn codec(video: &Path) -> Option<String> {
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "V:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
+        .arg(video)
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|c| !c.is_empty())
 }
 
 /// Video duration in seconds, from ffprobe.
@@ -82,7 +102,7 @@ pub fn duration(video: &Path) -> Option<f64> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
-fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel) -> Vec<String> {
+fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel, codec: Option<&str>) -> Vec<String> {
     let fps = opts.fps;
     let mut a: Vec<String> = vec!["-hide_banner".into(), "-loglevel".into(), "error".into(), "-nostdin".into()];
     let filter = match hw {
@@ -111,8 +131,13 @@ fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel) -> Vec<String> {
             format!("fps={fps},scale={SAMPLE_W}:{SAMPLE_H}:flags=area")
         }
     };
+    // ffmpeg prefers libdav1d for AV1, which never uses the GPU: ask for its own decoder.
+    if hw == HwAccel::Vaapi && codec == Some("av1") {
+        a.extend(["-c:v", "av1"].map(String::from));
+    }
     a.extend(["-i".into(), video.to_string_lossy().into_owned()]);
-    a.extend(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf"].map(String::from));
+    // `V`, not `v`: skips cover pictures stored as video streams.
+    a.extend(["-map", "0:V:0", "-an", "-sn", "-dn", "-vf"].map(String::from));
     a.push(filter);
     a.extend(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"].map(String::from));
     a
@@ -121,8 +146,11 @@ fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel) -> Vec<String> {
 fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
     let start = Instant::now();
     let source_size = std::fs::metadata(video).with_context(|| format!("{}", video.display()))?.len();
-    let mut child = Command::new("ffmpeg")
-        .args(ffmpeg_args(video, opts, hw))
+    let codec = if hw == HwAccel::Vaapi { codec(video) } else { None };
+    // Lowest priority: an analysis never slows down Jellyfin or the rest of the server.
+    let mut child = Command::new("nice")
+        .args(["-n", "19", "ffmpeg"])
+        .args(ffmpeg_args(video, opts, hw, codec.as_deref()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -296,6 +324,17 @@ mod tests {
             f[y * SAMPLE_W * 3..(y + 1) * SAMPLE_W * 3].fill(v);
         }
         f
+    }
+
+    #[test]
+    fn av1_uses_ffmpeg_own_decoder_on_vaapi_and_skips_covers() {
+        let opts = crate::analyze_options();
+        let a = ffmpeg_args(Path::new("f.mkv"), &opts, HwAccel::Vaapi, Some("av1"));
+        let (c, i) = (a.iter().position(|x| x == "-c:v").unwrap(), a.iter().position(|x| x == "-i").unwrap());
+        assert!(c < i && a[c + 1] == "av1");
+        assert!(a.contains(&"0:V:0".to_string()));
+        let a = ffmpeg_args(Path::new("f.mkv"), &opts, HwAccel::Vaapi, Some("hevc"));
+        assert!(!a.contains(&"-c:v".to_string()));
     }
 
     #[test]

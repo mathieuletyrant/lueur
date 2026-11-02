@@ -76,9 +76,11 @@ pub fn analyze_options() -> analyze::Options {
         cols: 16,
         rows: 9,
         hwaccel: analyze::HwAccel::Auto,
-        threads: 0,
+        // Software decoding only: leaves the other cores to the server.
+        threads: 2,
         progress: None,
         cancel: None,
+        on_cpu: None,
     }
 }
 

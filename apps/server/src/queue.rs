@@ -83,6 +83,7 @@ struct Job {
     duration: OnceLock<Option<f64>>,
     frames: Arc<AtomicUsize>,
     cancel: Arc<AtomicBool>,
+    on_cpu: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -104,6 +105,8 @@ pub struct Running {
     pub name: String,
     /// 0..1, absent when the duration is unknown.
     pub progress: Option<f64>,
+    /// Decoding on the CPU: slower, and heavier on the server.
+    pub cpu: bool,
 }
 
 #[derive(Serialize)]
@@ -199,6 +202,7 @@ impl Queue {
                 duration: OnceLock::new(),
                 frames: Default::default(),
                 cancel: Default::default(),
+                on_cpu: Default::default(),
             });
             s.running.push(job.clone());
             let q = self.clone();
@@ -211,6 +215,7 @@ impl Queue {
         let opts = analyze::Options {
             progress: Some(job.frames.clone()),
             cancel: Some(job.cancel.clone()),
+            on_cpu: Some(job.on_cpu.clone()),
             ..self.opts.clone()
         };
         let n = name(&job.video);
@@ -257,6 +262,7 @@ impl Queue {
                 .iter()
                 .map(|j| Running {
                     name: name(&j.video),
+                    cpu: j.on_cpu.load(Ordering::Relaxed),
                     progress: j
                         .duration
                         .get()
