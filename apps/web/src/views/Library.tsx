@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Clock, Film, FolderSearch, Library, Loader2, RotateCcw, ScanLine, Search, Square } from "lucide-react";
 import { api, useLoad, type Video } from "../api";
 import { useApp } from "../App";
-import { Alert, Button, Card, CardHeader, cx, Empty, Input, PageHeader, Pill, Progress, Toggle, Decoder } from "../ui";
+import { Alert, Button, Card, CardHeader, cx, Empty, Input, PageHeader, Pill, Progress, RunningAnalysis, SwitchRow, Toggle } from "../ui";
 
 export function LibraryView() {
   const { cfg, status, patch, go } = useApp();
@@ -132,17 +132,7 @@ export function LibraryView() {
               <ul className="divide-y divide-white/[0.05]">
                 {q.running.map((r) => (
                   <li key={r.name} className="py-3">
-                    <div className="mb-2 flex items-center justify-between gap-3 text-sm">
-                      <span className="flex min-w-0 items-center gap-2">
-                        <Loader2 className="size-3.5 shrink-0 animate-spin text-glow-1" />
-                        <span className="truncate">{r.name}</span>
-                        <Decoder cpu={r.cpu} />
-                      </span>
-                      <span className="text-xs text-zinc-500 tabular-nums">
-                        {r.progress !== null ? `${Math.round(r.progress * 100)}%` : "…"}
-                      </span>
-                    </div>
-                    <Progress value={r.progress} />
+                    <RunningAnalysis {...r} />
                   </li>
                 ))}
                 {q.next.map((n) => (
@@ -235,15 +225,13 @@ function Automation() {
           )}
         </div>
         <Exclude />
-        <label className="flex items-start justify-between gap-4 border-t border-white/[0.06] pt-5">
-          <span>
-            <span className="block text-sm font-medium">Analyze on first playback</span>
-            <span className="mt-0.5 block text-xs text-zinc-500">
-              A film played without a track is analyzed first; the lights join in when it is done.
-            </span>
-          </span>
-          <Toggle label="Analyze on first playback" checked={cfg.auto_analyze} onChange={(v) => patch({ auto_analyze: v })} />
-        </label>
+        <SwitchRow
+          className="border-t border-white/[0.06] pt-5"
+          label="Analyze on first playback"
+          hint="A film played without a track is analyzed first; the lights join in when it is done."
+          checked={cfg.auto_analyze}
+          onChange={(v) => patch({ auto_analyze: v })}
+        />
       </div>
     </Card>
   );

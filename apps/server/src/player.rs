@@ -3,11 +3,11 @@
 
 use crate::color::{Look, Rgb, linear_to_srgb};
 use crate::config::Config;
-use crate::hue::{Area, Bridge, Channel, Credentials, Stream};
+use crate::hue::{Area, Bridge, Channel, Stream};
 use crate::jellyfin::{Clock, ClockEvent, Jellyfin, NowPlaying};
 use crate::queue::Queue;
 use crate::track::{self, Track};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -170,20 +170,17 @@ impl Live {
 
 pub struct Player {
     cfg: Config,
-    bridge: Arc<Bridge>,
+    bridge: Bridge,
     area: Area,
-    dtls_addr: String,
     live: Arc<Live>,
     queue: Arc<Queue>,
 }
 
 impl Player {
     pub async fn new(cfg: Config, live: Arc<Live>, queue: Arc<Queue>) -> Result<Self> {
-        let creds = Credentials { username: cfg.hue.username.clone(), clientkey: cfg.hue.clientkey.clone() };
-        let bridge = Bridge::new(&cfg.hue.bridge, creds, cfg.hue.base_url.as_deref());
+        let bridge = Bridge::new(&cfg.hue);
         let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
         info!("area \"{}\": {} channel(s)", area.metadata.name, area.channels.len());
-        let dtls_addr = format!("{}:{}", cfg.hue.bridge, cfg.hue.dtls_port.unwrap_or(2100));
         *live.status.lock().unwrap() = Status {
             area: Some(area.metadata.name.clone()),
             channels: area
@@ -199,7 +196,7 @@ impl Player {
                 .collect(),
             ..Default::default()
         };
-        Ok(Self { cfg, bridge: Arc::new(bridge), area, dtls_addr, live, queue })
+        Ok(Self { cfg, bridge, area, live, queue })
     }
 
     fn status(&self) -> std::sync::MutexGuard<'_, Status> {
@@ -207,9 +204,7 @@ impl Player {
     }
 
     async fn open(&self) -> Result<Session> {
-        self.bridge.set_streaming(&self.area.id, true).await?;
-        let (addr, creds, id) = (self.dtls_addr.clone(), self.bridge.credentials().clone(), self.area.id.clone());
-        let stream = tokio::task::spawn_blocking(move || Stream::connect(&addr, &creds, &id)).await??;
+        let stream = self.bridge.open_stream(&self.area.id).await?;
         info!("Entertainment stream open");
         Ok(Session { stream })
     }
@@ -289,7 +284,7 @@ impl Player {
                             Err(e) => {
                                 errors += 1;
                                 live.status.lock().unwrap().jellyfin_error = Some(format!("{e:#}"));
-                                if errors == 1 || errors % 20 == 0 {
+                                if errors == 1 || errors.is_multiple_of(20) {
                                     warn!("{e:#}");
                                 }
                                 if errors >= 4 {
@@ -303,7 +298,7 @@ impl Player {
         };
 
         let mut clock = Clock::new(self.cfg.sync.jump_ms / 1000.0, self.cfg.sync.drift_ms / 1000.0);
-        let mut current: Option<(String, Option<Arc<Track>>, Mapping)> = None;
+        let mut current: Option<(String, Option<Arc<Track>>, Option<Mapping>)> = None;
         let mut session: Option<Session> = None;
         let mut retry_at = Instant::now();
         let mut idle_since: Option<Instant> = None;
@@ -333,11 +328,7 @@ impl Player {
                     Some(np) => {
                         if current.as_ref().map(|c| &c.0) != Some(&np.item_id) {
                             info!("playing: \"{}\" on {}", np.name, np.device);
-                            let t = self.load_track(np);
-                            let (cols, rows) = t.as_ref().map(|t| (t.cols, t.rows)).unwrap_or((16, 9));
-                            let look = self.live.look.lock().unwrap().clone();
-                            current =
-                                Some((np.item_id.clone(), t, Mapping::new(&self.area.channels, cols, rows, &look)));
+                            current = Some((np.item_id.clone(), self.load_track(np), None));
                         }
                         if let ClockEvent::Jump = clock.update(np) {
                             tracing::debug!("clock re-synced to {:.2} s", np.position);
@@ -369,7 +360,7 @@ impl Player {
                 retry_track_at = now + RETRY_TRACK;
                 let np = rx.borrow().clone().filter(|np| np.item_id == c.0);
                 if let Some(t) = np.and_then(|np| self.find_track(&np)) {
-                    c.2 = Mapping::new(&self.area.channels, t.cols, t.rows, &self.live.look.lock().unwrap());
+                    c.2 = None;
                     if let Some(p) = self.status().playing.as_mut() {
                         p.has_track = true;
                         p.duration = Some(t.duration());
@@ -378,24 +369,23 @@ impl Player {
                 }
             }
 
-            // The Look changes live; spread and fit_area need a new mapping.
+            // Built once a Track is there, rebuilt when the Look's spread or fit_area change.
             let look = self.live.look.lock().unwrap().clone();
-            if let Some(c) = current.as_mut()
-                && !c.2.made_for(&look)
+            if let Some((_, Some(t), m)) = current.as_mut()
+                && !m.as_ref().is_some_and(|m| m.made_for(&look))
             {
-                let (cols, rows) = c.1.as_ref().map(|t| (t.cols, t.rows)).unwrap_or((16, 9));
-                c.2 = Mapping::new(&self.area.channels, cols, rows, &look);
+                *m = Some(Mapping::new(&self.area.channels, t.cols, t.rows, &look));
             }
 
-            let playable = current.as_ref().and_then(|(_, t, m)| t.clone().map(|t| (t, m)));
+            let playable = current.as_ref().and_then(|(_, t, m)| Some((t.clone()?, m.as_ref()?)));
             let want = playable.is_some() && paused_since.is_none_or(|p| now - p < PAUSE_TIMEOUT);
             if !want {
                 let since = *idle_since.get_or_insert(now);
-                if now - since >= STOP_AFTER {
-                    if let Some(s) = session.take() {
-                        self.close(s).await;
-                        self.set_streaming(false, &[]);
-                    }
+                if now - since >= STOP_AFTER
+                    && let Some(s) = session.take()
+                {
+                    self.close(s).await;
+                    self.set_streaming(false, &[]);
                 }
                 continue;
             }
@@ -466,14 +456,9 @@ pub async fn stream_for(
     stop: impl Fn() -> bool,
     mut colors: impl FnMut(&Area, f32) -> Vec<(u8, Rgb)>,
 ) -> Result<()> {
-    let creds = Credentials { username: cfg.hue.username.clone(), clientkey: cfg.hue.clientkey.clone() };
-    let bridge = Bridge::new(&cfg.hue.bridge, creds.clone(), cfg.hue.base_url.as_deref());
+    let bridge = Bridge::new(&cfg.hue);
     let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
-    bridge.set_streaming(&area.id, true).await?;
-    let addr = format!("{}:{}", cfg.hue.bridge, cfg.hue.dtls_port.unwrap_or(2100));
-    let id = area.id.clone();
-    let mut stream =
-        tokio::task::spawn_blocking(move || Stream::connect(&addr, &creds, &id)).await?.context("DTLS connection")?;
+    let mut stream = bridge.open_stream(&area.id).await?;
     let start = Instant::now();
     let mut tick = tokio::time::interval(FRAME);
     let mut res = Ok(());

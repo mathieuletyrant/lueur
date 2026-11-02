@@ -4,7 +4,7 @@ import { api, useLoad, type Library as Lib } from "../api";
 import { setupSteps, useApp } from "../App";
 import { AreaView } from "../components/AreaView";
 import { FolderPicker } from "../components/FolderPicker";
-import { Alert, Button, Card, cx, Field, Input, PageHeader, Pill, Toggle } from "../ui";
+import { Alert, Button, Card, cx, Field, Input, PageHeader, Pill, Select, Toggle } from "../ui";
 
 export function Setup() {
   const { cfg, status } = useApp();
@@ -373,16 +373,16 @@ function JellyfinStep({ done }: { done: boolean }) {
       {info.data && (
         <div className="mt-6 border-t border-white/[0.06] pt-5">
           <Field label="Follow one device only" hint="Useful when several people watch Jellyfin at home.">
-            <select
+            <Select
               value={cfg.jellyfin.device ?? ""}
               onChange={(e) => patch({ jellyfin: { device: e.target.value || null } })}
-              className="h-9 w-full max-w-sm rounded-lg border border-white/10 bg-zinc-950/60 px-3 text-sm text-zinc-100 outline-none focus:border-white/25"
+              className="max-w-sm"
             >
               <option value="">Any device</option>
               {[...new Set([...(devices.data ?? []), ...(cfg.jellyfin.device ? [cfg.jellyfin.device] : [])])].map((d) => (
                 <option key={d} value={d}>{d}</option>
               ))}
-            </select>
+            </Select>
           </Field>
         </div>
       )}

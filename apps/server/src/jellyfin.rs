@@ -207,10 +207,11 @@ impl Jellyfin {
             if !matches!(item.kind.as_str(), "Movie" | "Episode" | "Video" | "MusicVideo") {
                 continue;
             }
-            if let Some(d) = &self.device {
-                if !s.device_name.to_lowercase().contains(d) && !s.client.to_lowercase().contains(d) {
-                    continue;
-                }
+            if let Some(d) = &self.device
+                && !s.device_name.to_lowercase().contains(d)
+                && !s.client.to_lowercase().contains(d)
+            {
+                continue;
             }
             let checkin_age = s.last_playback_check_in.as_deref().and_then(parse_iso8601).map(|t| now_wall - t);
             let ticks = ps.position_ticks.unwrap_or(0);

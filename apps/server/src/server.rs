@@ -2,7 +2,7 @@
 //! web UI, in one process (see docs/adr/0001-api-in-rust-binary.md).
 
 use crate::config::Config;
-use crate::hue::{self, Bridge, Credentials};
+use crate::hue::{self, Bridge};
 use crate::jellyfin::Jellyfin;
 use crate::player::{self, Live, Player, Status};
 use crate::queue::{self, Queue};
@@ -92,7 +92,7 @@ impl App {
         if h.username.is_empty() {
             return Err(bad("bridge not paired"));
         }
-        Ok(Bridge::new(&h.bridge, Credentials { username: h.username, clientkey: h.clientkey }, h.base_url.as_deref()))
+        Ok(Bridge::new(&h))
     }
 
     fn jellyfin(&self) -> Result<Jellyfin, ApiError> {
@@ -333,20 +333,15 @@ struct LibraryStats {
 async fn libraries(State(app): State<Arc<App>>) -> Res<Vec<LibraryStats>> {
     let cfg = app.config();
     let stats = tokio::task::spawn_blocking(move || {
-        cfg.libraries
-            .iter()
-            .map(|l| {
-                let mut videos = Vec::new();
-                queue::collect(&[PathBuf::from(&l.path)], &mut videos);
-                videos.retain(|v| !queue::excluded(v, &cfg.exclude));
-                LibraryStats {
-                    name: l.name.clone(),
-                    jellyfin: l.jellyfin.clone(),
-                    path: l.path.clone(),
-                    exists: Path::new(&l.path).is_dir(),
-                    videos: videos.len(),
-                    analyzed: videos.iter().filter(|v| track::is_fresh(&cfg.store, v)).count(),
-                }
+        queue::library_videos(&cfg)
+            .into_iter()
+            .map(|(l, videos)| LibraryStats {
+                name: l.name.clone(),
+                jellyfin: l.jellyfin.clone(),
+                path: l.path.clone(),
+                exists: Path::new(&l.path).is_dir(),
+                videos: videos.len(),
+                analyzed: videos.iter().filter(|v| track::is_fresh(&cfg.store, v)).count(),
             })
             .collect()
     })
@@ -358,11 +353,7 @@ impl App {
     async fn scan(self: &Arc<Self>, auto: bool) -> anyhow::Result<LastScan> {
         let cfg = self.config();
         let q = self.queue.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let roots: Vec<PathBuf> = cfg.libraries.iter().map(|l| PathBuf::from(&l.path)).collect();
-            queue::scan(&roots, &cfg.exclude, &cfg.store, &q)
-        })
-        .await?;
+        let result = tokio::task::spawn_blocking(move || queue::scan(&cfg, &q)).await?;
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
         let last = LastScan { at, auto, result };
         *self.last_scan.lock().unwrap() = Some(last.clone());
@@ -423,11 +414,9 @@ async fn videos(State(app): State<Arc<App>>) -> Res<Vec<Video>> {
     let (pending, running) = app.queue.queued();
     let list = tokio::task::spawn_blocking(move || {
         let mut out = Vec::new();
-        for l in &cfg.libraries {
-            let mut files = Vec::new();
-            queue::collect(&[PathBuf::from(&l.path)], &mut files);
-            files.retain(|v| !queue::excluded(v, &cfg.exclude));
+        for (l, files) in queue::library_videos(&cfg) {
             out.extend(files.into_iter().map(|f| {
+                let duration = track::fresh_duration(&cfg.store, &f);
                 Video {
                     library: l.name.clone(),
                     name: f.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
@@ -436,8 +425,8 @@ async fn videos(State(app): State<Arc<App>>) -> Res<Vec<Video>> {
                         .and_then(|p| p.strip_prefix(&l.path).ok())
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default(),
-                    duration: track::fresh_duration(&cfg.store, &f),
-                    analyzed: track::is_fresh(&cfg.store, &f),
+                    analyzed: duration.is_some(),
+                    duration,
                     state: if running.contains(&f) {
                         Some("running")
                     } else if pending.contains(&f) {

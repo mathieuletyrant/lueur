@@ -2,6 +2,7 @@
 //! start/stop) and the Entertainment stream over DTLS 1.2 PSK on UDP 2100.
 
 use crate::color::{Rgb, linear_to_srgb};
+use crate::config::HueConfig;
 use anyhow::{Context, Result, anyhow, bail};
 use openssl::ssl::{HandshakeError, Ssl, SslContext, SslMethod, SslOptions, SslStream, SslVerifyMode, SslVersion};
 use serde::{Deserialize, Serialize};
@@ -160,13 +161,28 @@ pub struct Area {
 pub struct Bridge {
     /// `https://<bridge>`, or another URL for tests.
     base: String,
+    /// `<bridge>:2100`, where the Entertainment stream goes.
+    dtls_addr: String,
     creds: Credentials,
     http: reqwest::Client,
 }
 
 impl Bridge {
-    pub fn new(host: &str, creds: Credentials, base: Option<&str>) -> Self {
-        Self { base: base.map(str::to_string).unwrap_or_else(|| format!("https://{host}")), creds, http: http() }
+    pub fn new(cfg: &HueConfig) -> Self {
+        Self {
+            base: cfg.base_url.clone().unwrap_or_else(|| format!("https://{}", cfg.bridge)),
+            dtls_addr: format!("{}:{}", cfg.bridge, cfg.dtls_port.unwrap_or(2100)),
+            creds: Credentials { username: cfg.username.clone(), clientkey: cfg.clientkey.clone() },
+            http: http(),
+        }
+    }
+
+    /// Switches the area to streaming and opens its Entertainment stream.
+    pub async fn open_stream(&self, area_id: &str) -> Result<Stream> {
+        self.set_streaming(area_id, true).await?;
+        let (addr, creds, id) = (self.dtls_addr.clone(), self.creds.clone(), area_id.to_string());
+        // The DTLS handshake blocks: off the async threads.
+        tokio::task::spawn_blocking(move || Stream::connect(&addr, &creds, &id)).await?.context("DTLS connection")
     }
 
     async fn clip(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -215,10 +231,6 @@ impl Bridge {
         )
         .await?;
         Ok(())
-    }
-
-    pub fn credentials(&self) -> &Credentials {
-        &self.creds
     }
 }
 

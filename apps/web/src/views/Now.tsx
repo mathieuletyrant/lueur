@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { ArrowRight, Clapperboard, Loader2, Pause, Rainbow, Sparkles, Tv } from "lucide-react";
+import { ArrowRight, Clapperboard, Pause, Rainbow, Sparkles, Tv } from "lucide-react";
 import { api, useDebounced } from "../api";
 import { setupSteps, useApp } from "../App";
 import { AreaView } from "../components/AreaView";
-import { Alert, Button, Card, CardHeader, Empty, Pill, Progress, rgb, time, Decoder, Slider, SwitchRow } from "../ui";
+import { Alert, Button, Card, CardHeader, Empty, Pill, Progress, rgb, RunningAnalysis, Slider, SwitchRow, time } from "../ui";
 
 export function Now() {
   const { cfg, status, go } = useApp();
@@ -186,15 +186,7 @@ function QueueCard() {
           <ul className="space-y-4">
             {q!.running.map((r) => (
               <li key={r.name}>
-                <div className="mb-1.5 flex items-center justify-between gap-3 text-sm">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <Loader2 className="size-3.5 shrink-0 animate-spin text-glow-1" />
-                    <span className="truncate">{r.name}</span>
-                    <Decoder cpu={r.cpu} />
-                  </span>
-                  {r.progress !== null && <span className="text-xs text-zinc-500 tabular-nums">{Math.round(r.progress * 100)}%</span>}
-                </div>
-                <Progress value={r.progress} />
+                <RunningAnalysis {...r} />
               </li>
             ))}
           </ul>

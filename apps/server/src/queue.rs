@@ -2,6 +2,7 @@
 //! Each running Analysis gets its own thread; at most `jobs` run at once.
 
 use crate::analyze;
+use crate::config::{Config, Library};
 use crate::track;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -49,10 +50,9 @@ pub struct ScanResult {
 /// Track, and deletes the Orphan Tracks: those of videos that are gone,
 /// excluded or outside the Libraries. Deletes nothing when a Library can't be read (an
 /// unmounted disk would otherwise wipe the Store).
-pub fn scan(libraries: &[PathBuf], exclude: &[String], store: &Path, q: &Arc<Queue>) -> ScanResult {
-    let mut videos = Vec::new();
-    collect(libraries, &mut videos);
-    videos.retain(|v| !excluded(v, exclude));
+pub fn scan(cfg: &Config, q: &Arc<Queue>) -> ScanResult {
+    let store = cfg.store.as_path();
+    let videos: Vec<PathBuf> = library_videos(cfg).into_iter().flat_map(|(_, v)| v).collect();
     let settled = |v: &PathBuf| {
         std::fs::metadata(v).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|e| e >= SETTLE))
     };
@@ -62,7 +62,7 @@ pub fn scan(libraries: &[PathBuf], exclude: &[String], store: &Path, q: &Arc<Que
             r.queued += 1;
         }
     }
-    if libraries.is_empty() || !libraries.iter().all(|l| l.is_dir()) {
+    if cfg.libraries.is_empty() || !cfg.libraries.iter().all(|l| Path::new(&l.path).is_dir()) {
         return r;
     }
     let keep: HashSet<PathBuf> = videos.iter().map(|v| track::track_path(store, v)).collect();
@@ -76,6 +76,19 @@ pub fn scan(libraries: &[PathBuf], exclude: &[String], store: &Path, q: &Arc<Que
         info!("removed {} orphan track(s)", r.removed);
     }
     r
+}
+
+/// Each Library with its videos, excluded ones left out.
+pub fn library_videos(cfg: &Config) -> Vec<(&Library, Vec<PathBuf>)> {
+    cfg.libraries
+        .iter()
+        .map(|l| {
+            let mut videos = Vec::new();
+            collect(&[PathBuf::from(&l.path)], &mut videos);
+            videos.retain(|v| !excluded(v, &cfg.exclude));
+            (l, videos)
+        })
+        .collect()
 }
 
 /// The path contains one of `patterns`, ignoring case.
@@ -304,19 +317,27 @@ mod tests {
         std::fs::write(&kept, b"").unwrap();
         std::fs::write(&orphan, b"").unwrap();
         let q = Queue::new(store.clone(), crate::analyze_options(), 1);
+        let library =
+            |p: &Path| Library { name: String::new(), jellyfin: String::new(), path: p.to_string_lossy().into() };
+        let cfg = |libs: Vec<Library>, exclude: Vec<String>| Config {
+            store: store.clone(),
+            libraries: libs,
+            exclude,
+            ..Default::default()
+        };
 
         // A Library that can't be read: nothing is deleted.
-        let r = scan(&[lib.clone(), root.join("unmounted")], &[], &store, &q);
+        let r = scan(&cfg(vec![library(&lib), library(&root.join("unmounted"))], vec![]), &q);
         assert_eq!(r.removed, 0);
         assert!(orphan.exists());
 
         // The film was just written: not queued yet; the orphan goes, the film's Track stays.
-        let r = scan(&[lib.clone()], &[], &store, &q);
+        let r = scan(&cfg(vec![library(&lib)], vec![]), &q);
         assert_eq!((r.queued, r.removed), (0, 1));
         assert!(kept.exists() && !orphan.exists());
 
         // Excluded: its Track becomes an orphan too.
-        let r = scan(&[lib], &["FILM".into()], &store, &q);
+        let r = scan(&cfg(vec![library(&lib)], vec!["FILM".into()]), &q);
         assert_eq!(r.removed, 1);
         assert!(!kept.exists());
         std::fs::remove_dir_all(root).ok();

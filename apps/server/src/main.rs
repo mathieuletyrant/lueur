@@ -170,8 +170,7 @@ async fn main() -> Result<()> {
             bail!("link button not pressed in time");
         }
         Cmd::Areas => {
-            let creds = hue::Credentials { username: cfg.hue.username.clone(), clientkey: cfg.hue.clientkey.clone() };
-            let b = hue::Bridge::new(&cfg.hue.bridge, creds, cfg.hue.base_url.as_deref());
+            let b = hue::Bridge::new(&cfg.hue);
             for a in b.areas().await? {
                 println!("{} — {} ({}, {})", a.metadata.name, a.id, a.configuration_type, a.status);
                 for ch in &a.channels {

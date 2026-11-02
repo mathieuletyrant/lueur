@@ -231,6 +231,8 @@ impl Bars {
         Self { crop: [0; 4], cand: [0; 4], count: [0; 4], hold: hold.max(1) }
     }
 
+    // Rows, columns and the 4 sides index several arrays at once.
+    #[allow(clippy::needless_range_loop)]
     pub fn update(&mut self, px: &[u8]) -> Crop {
         let (w, h) = (SAMPLE_W, SAMPLE_H);
         // Strongest channel, not luminance: pure blue is not a black bar.
@@ -310,9 +312,7 @@ impl Grid {
         }
         for a in &self.acc {
             let n = a[3].max(1.0);
-            for ch in 0..3 {
-                out.push((linear_to_srgb(a[ch] / n) * 255.0).round() as u8);
-            }
+            out.extend(a[..3].iter().map(|v| (linear_to_srgb(v / n) * 255.0).round() as u8));
         }
     }
 }

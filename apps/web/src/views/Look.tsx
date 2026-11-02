@@ -3,7 +3,7 @@ import { Lightbulb, RotateCcw, Square } from "lucide-react";
 import { api, useDebounced, useLoad, type Look } from "../api";
 import { useApp } from "../App";
 import { AreaView } from "../components/AreaView";
-import { Alert, Button, Card, CardHeader, PageHeader, rgb, Slider, SwitchRow, time } from "../ui";
+import { Alert, Button, Card, CardHeader, PageHeader, rgb, Select, Slider, SwitchRow, time } from "../ui";
 
 const DEFAULT: Look = {
   brightness: 1,
@@ -215,14 +215,13 @@ function FrameTest() {
         <div className="space-y-4 lg:col-span-2">
           <label className="block">
             <span className="mb-1.5 block text-xs font-medium text-zinc-400">Film or episode</span>
-            <select
+            <Select
               value={path}
               onChange={(e) => {
                 const v = analyzed.find((x) => x.path === e.target.value);
                 setPath(e.target.value);
                 setT(Math.round((v?.duration ?? 0) / 4));
               }}
-              className="h-9 w-full rounded-lg border border-white/10 bg-zinc-950/60 px-3 text-sm text-zinc-100 outline-none focus:border-white/25"
             >
               {[...new Set(analyzed.map((v) => v.library))].map((lib) => (
                 <optgroup key={lib} label={lib}>
@@ -235,7 +234,7 @@ function FrameTest() {
                     ))}
                 </optgroup>
               ))}
-            </select>
+            </Select>
           </label>
           <Slider
             id="frame-t"

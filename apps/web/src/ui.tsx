@@ -286,3 +286,33 @@ export function SwitchRow({
     </label>
   );
 }
+
+/** A native select styled like `Input`. */
+export function Select({ className, ...p }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      {...p}
+      className={cx(
+        "h-9 w-full rounded-lg border border-white/10 bg-zinc-950/60 px-3 text-sm text-zinc-100 outline-none focus:border-white/25",
+        className,
+      )}
+    />
+  );
+}
+
+/** A running Analysis: name, GPU/CPU, progress. */
+export function RunningAnalysis({ name, progress, cpu }: { name: string; progress: number | null; cpu: boolean }) {
+  return (
+    <>
+      <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+        <span className="flex min-w-0 items-center gap-2">
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-glow-1" />
+          <span className="truncate">{name}</span>
+          <Decoder cpu={cpu} />
+        </span>
+        <span className="text-xs text-zinc-500 tabular-nums">{progress !== null ? `${Math.round(progress * 100)}%` : "…"}</span>
+      </div>
+      <Progress value={progress} />
+    </>
+  );
+}
