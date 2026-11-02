@@ -1,5 +1,5 @@
-//! Boucle principale : suit Jellyfin, charge la piste du film en cours et
-//! diffuse les couleurs vers la zone de divertissement à 50 images/s.
+//! Main loop: follows Jellyfin, loads the track of the current film and
+//! streams colors to the entertainment area at 50 frames per second.
 
 use crate::analyze;
 use crate::color::{Look, Rgb};
@@ -19,14 +19,14 @@ const FRAME: Duration = Duration::from_millis(20);
 const STOP_AFTER: Duration = Duration::from_millis(1500);
 const PAUSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Pour chaque canal Hue, les cases de la grille qui l'éclairent et leur poids.
+/// For each Hue channel, the grid cells that light it and their weights.
 pub struct Mapping {
     channels: Vec<(u8, Vec<(usize, f32)>)>,
 }
 
 impl Mapping {
-    /// Position Hue : x de -1 (gauche) à 1 (droite), z de -1 (sol) à 1 (plafond).
-    /// Chaque canal prend une moyenne gaussienne autour du point d'écran correspondant.
+    /// Hue position: x from -1 (left) to 1 (right), z from -1 (floor) to 1 (ceiling).
+    /// Each channel takes a Gaussian average around the matching screen point.
     pub fn new(channels: &[Channel], cols: u8, rows: u8) -> Self {
         let (cols, rows) = (cols as usize, rows as usize);
         let channels = channels
@@ -69,7 +69,7 @@ impl Mapping {
     }
 }
 
-/// Lissage exponentiel par canal (le pont lisse aussi, mais à 25 Hz).
+/// Per-channel exponential smoothing (the bridge smooths too, but at 25 Hz).
 struct Smoother {
     state: Vec<Rgb>,
 }
@@ -107,7 +107,7 @@ impl Player {
         let creds = Credentials { username: cfg.hue.username.clone(), clientkey: cfg.hue.clientkey.clone() };
         let bridge = Bridge::new(&cfg.hue.bridge, creds, cfg.hue.base_url.as_deref());
         let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
-        info!("zone « {} » : {} canal(aux)", area.metadata.name, area.channels.len());
+        info!("area \"{}\": {} channel(s)", area.metadata.name, area.channels.len());
         let dtls_addr = format!("{}:{}", cfg.hue.bridge, cfg.hue.dtls_port.unwrap_or(2100));
         Ok(Self { cfg, bridge: Arc::new(bridge), area, dtls_addr, analyzing: Default::default() })
     }
@@ -116,44 +116,44 @@ impl Player {
         self.bridge.set_streaming(&self.area.id, true).await?;
         let (addr, creds, id) = (self.dtls_addr.clone(), self.bridge.credentials().clone(), self.area.id.clone());
         let stream = tokio::task::spawn_blocking(move || Stream::connect(&addr, &creds, &id)).await??;
-        info!("flux Entertainment ouvert");
+        info!("Entertainment stream open");
         Ok(Session { stream })
     }
 
     async fn close(&self, s: Session) {
         s.stream.close();
         if let Err(e) = self.bridge.set_streaming(&self.area.id, false).await {
-            warn!("arrêt du flux : {e:#}");
+            warn!("stopping the stream: {e:#}");
         }
-        info!("flux arrêté, les lampes reprennent leur état");
+        info!("stream stopped, lights back to their previous state");
     }
 
     fn load_track(&self, np: &NowPlaying) -> Option<Arc<Track>> {
         let Some(jpath) = &np.path else {
-            warn!("« {} » : chemin inconnu (clé API sans droits admin ?)", np.name);
+            warn!("\"{}\": unknown path (API key without admin rights?)", np.name);
             return None;
         };
         let video = self.cfg.local_path(jpath);
         let tp = track::track_path(&self.cfg.store, &video);
         match Track::load(&tp) {
             Ok(t) => {
-                info!("piste chargée pour « {} » ({:.0} min)", np.name, t.duration() / 60.0);
+                info!("track loaded for \"{}\" ({:.0} min)", np.name, t.duration() / 60.0);
                 return Some(Arc::new(t));
             }
-            Err(_) => warn!("pas de piste pour « {} » ({})", np.name, video.display()),
+            Err(_) => warn!("no track for \"{}\" (Jellyfin path: {jpath}, local path: {})", np.name, video.display()),
         }
         if self.cfg.auto_analyze && self.analyzing.lock().unwrap().insert(video.clone()) {
             let (store, set) = (self.cfg.store.clone(), self.analyzing.clone());
-            info!("analyse lancée en arrière-plan, les lampes suivront à la prochaine lecture");
+            info!("analysis started in the background, the lights will follow on the next playback");
             std::thread::spawn(move || {
                 let opts = analyze::Options { fps: 12.0, cols: 16, rows: 9, hwaccel: analyze::HwAccel::Auto, threads: 2 };
                 match analyze::analyze(&video, &opts) {
                     Ok((t, _)) => {
                         if let Err(e) = t.save(&track::track_path(&store, &video)) {
-                            warn!("sauvegarde de la piste : {e:#}");
+                            warn!("saving the track: {e:#}");
                         }
                     }
-                    Err(e) => warn!("analyse de {} : {e:#}", video.display()),
+                    Err(e) => warn!("analyzing {}: {e:#}", video.display()),
                 }
                 set.lock().unwrap().remove(&video);
             });
@@ -205,7 +205,7 @@ impl Player {
         let ctrl_c = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c);
 
-        info!("en attente d'une lecture sur Jellyfin…");
+        info!("waiting for playback on Jellyfin…");
         loop {
             tokio::select! {
                 _ = tick.tick() => {}
@@ -220,13 +220,13 @@ impl Player {
                 match &np {
                     Some(np) => {
                         if current.as_ref().map(|c| &c.0) != Some(&np.item_id) {
-                            info!("lecture : « {} » sur {}", np.name, np.device);
+                            info!("playing: \"{}\" on {}", np.name, np.device);
                             let t = self.load_track(np);
                             let (cols, rows) = t.as_ref().map(|t| (t.cols, t.rows)).unwrap_or((16, 9));
                             current = Some((np.item_id.clone(), t, Mapping::new(&self.area.channels, cols, rows)));
                         }
                         if let ClockEvent::Jump = clock.update(np) {
-                            tracing::debug!("horloge recalée à {:.2} s", np.position);
+                            tracing::debug!("clock re-synced to {:.2} s", np.position);
                         }
                         paused_since = if np.paused { paused_since.or(Some(now)) } else { None };
                     }
@@ -258,7 +258,7 @@ impl Player {
                 match self.open().await {
                     Ok(s) => session = Some(s),
                     Err(e) => {
-                        warn!("ouverture du flux : {e:#} (nouvel essai dans 5 s)");
+                        warn!("opening the stream: {e:#} (retrying in 5 s)");
                         retry_at = now + Duration::from_secs(5);
                         continue;
                     }
@@ -275,7 +275,7 @@ impl Player {
             }
             smoother.apply(&mut colors, look, dt);
             if let Err(e) = session.as_mut().unwrap().stream.send(&colors) {
-                warn!("envoi au pont : {e:#}");
+                warn!("sending to the bridge: {e:#}");
                 if let Some(s) = session.take() {
                     self.close(s).await;
                 }
@@ -291,7 +291,7 @@ impl Player {
     }
 }
 
-/// Mire de test : un arc-en-ciel qui tourne sur les canaux de la zone.
+/// Test pattern: a rainbow rotating across the area's channels.
 pub async fn test_pattern(cfg: &Config, seconds: f32) -> Result<()> {
     let creds = Credentials { username: cfg.hue.username.clone(), clientkey: cfg.hue.clientkey.clone() };
     let bridge = Bridge::new(&cfg.hue.bridge, creds.clone(), cfg.hue.base_url.as_deref());
@@ -301,7 +301,7 @@ pub async fn test_pattern(cfg: &Config, seconds: f32) -> Result<()> {
     let id = area.id.clone();
     let mut stream = tokio::task::spawn_blocking(move || Stream::connect(&addr, &creds, &id))
         .await?
-        .context("connexion DTLS")?;
+        .context("DTLS connection")?;
     let start = Instant::now();
     let mut tick = tokio::time::interval(FRAME);
     let n = area.channels.len().max(1) as f32;
@@ -332,7 +332,7 @@ fn hue_to_rgb(h: f32) -> Rgb {
         4 => (x, 0.0, 1.0),
         _ => (1.0, 0.0, x),
     };
-    // Valeurs sRGB → linéaire pour rester cohérent avec le reste du pipeline.
+    // sRGB → linear values, to stay consistent with the rest of the pipeline.
     [r, g, b].map(|v: f32| v.powf(2.2))
 }
 
@@ -345,7 +345,7 @@ mod tests {
     fn left_light_sees_left_of_screen() {
         let ch = |id, x| Channel { channel_id: id, position: Position { x, y: 0.8, z: 0.0 } };
         let m = Mapping::new(&[ch(0, -1.0), ch(1, 1.0)], 16, 9);
-        // Grille : moitié gauche rouge, moitié droite bleue.
+        // Grid: left half red, right half blue.
         let grid: Vec<Rgb> = (0..16 * 9).map(|i| if i % 16 < 8 { [1.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] }).collect();
         let mut out = Vec::new();
         m.colors(&grid, &mut out);

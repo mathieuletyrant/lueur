@@ -1,5 +1,5 @@
-//! Pont Philips Hue : API REST v2 (appairage, zones de divertissement,
-//! start/stop) et flux Entertainment en DTLS 1.2 PSK sur UDP 2100.
+//! Philips Hue bridge: REST API v2 (pairing, entertainment areas,
+//! start/stop) and the Entertainment stream over DTLS 1.2 PSK on UDP 2100.
 
 use crate::color::{linear_to_srgb, Rgb};
 use anyhow::{anyhow, bail, Context, Result};
@@ -12,11 +12,11 @@ use std::time::Duration;
 
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
-        // Le pont présente un certificat signé par Signify, pour son ID et pas son IP.
+        // The bridge presents a certificate signed by Signify, for its ID rather than its IP.
         .danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(5))
         .build()
-        .expect("client HTTP")
+        .expect("HTTP client")
 }
 
 #[derive(Debug, Clone)]
@@ -25,8 +25,8 @@ pub struct Credentials {
     pub clientkey: String,
 }
 
-/// Appairage : à appeler après un appui sur le bouton du pont.
-/// `Ok(None)` tant que le bouton n'a pas été pressé.
+/// Pairing: call after pressing the bridge's link button.
+/// Returns `Ok(None)` while the button has not been pressed.
 pub async fn pair(host: &str, base: Option<&str>) -> Result<Option<Credentials>> {
     let url = format!("{}/api", base.map(str::to_string).unwrap_or_else(|| format!("https://{host}")));
     let res: Value = http()
@@ -36,7 +36,7 @@ pub async fn pair(host: &str, base: Option<&str>) -> Result<Option<Credentials>>
         .await?
         .json()
         .await?;
-    let first = res.get(0).ok_or_else(|| anyhow!("réponse inattendue : {res}"))?;
+    let first = res.get(0).ok_or_else(|| anyhow!("unexpected response: {res}"))?;
     if let Some(s) = first.get("success") {
         return Ok(Some(Credentials {
             username: s["username"].as_str().unwrap_or_default().into(),
@@ -45,7 +45,7 @@ pub async fn pair(host: &str, base: Option<&str>) -> Result<Option<Credentials>>
     }
     match first["error"]["type"].as_i64() {
         Some(101) => Ok(None),
-        _ => bail!("appairage refusé : {}", first["error"]["description"]),
+        _ => bail!("pairing refused: {}", first["error"]["description"]),
     }
 }
 
@@ -80,7 +80,7 @@ pub struct Area {
 }
 
 pub struct Bridge {
-    /// `https://<pont>`, ou une autre URL pour les tests.
+    /// `https://<bridge>`, or another URL for tests.
     base: String,
     creds: Credentials,
     http: reqwest::Client,
@@ -103,9 +103,9 @@ impl Bridge {
         if let Some(b) = body {
             req = req.json(&b);
         }
-        let v: Value = req.send().await.context("pont Hue injoignable")?.json().await?;
+        let v: Value = req.send().await.context("Hue bridge unreachable")?.json().await?;
         if let Some(errs) = v["errors"].as_array().filter(|e| !e.is_empty()) {
-            bail!("erreur du pont : {}", errs[0]["description"]);
+            bail!("bridge error: {}", errs[0]["description"]);
         }
         Ok(v)
     }
@@ -115,18 +115,18 @@ impl Bridge {
         Ok(serde_json::from_value(v["data"].clone())?)
     }
 
-    /// Zone par nom (insensible à la casse) ou par id ; la seule zone si `want` est vide.
+    /// Area by name (case-insensitive) or id; the only area when `want` is empty.
     pub async fn find_area(&self, want: Option<&str>) -> Result<Area> {
         let areas = self.areas().await?;
         match want {
             Some(w) => areas
                 .into_iter()
                 .find(|a| a.id == w || a.metadata.name.eq_ignore_ascii_case(w))
-                .ok_or_else(|| anyhow!("zone de divertissement « {w} » introuvable")),
+                .ok_or_else(|| anyhow!("entertainment area \"{w}\" not found")),
             None if areas.len() == 1 => Ok(areas.into_iter().next().unwrap()),
-            None if areas.is_empty() => bail!("aucune zone de divertissement : créez-en une dans l'app Hue"),
+            None if areas.is_empty() => bail!("no entertainment area: create one in the Hue app"),
             None => bail!(
-                "plusieurs zones, précisez hue.area : {}",
+                "several areas, set hue.area: {}",
                 areas.iter().map(|a| a.metadata.name.as_str()).collect::<Vec<_>>().join(", ")
             ),
         }
@@ -144,7 +144,7 @@ impl Bridge {
     }
 }
 
-/// UDP connecté, exposé en Read/Write pour qu'OpenSSL y fasse passer le DTLS.
+/// Connected UDP socket, exposed as Read/Write so OpenSSL can run DTLS over it.
 #[derive(Debug)]
 struct Udp(UdpSocket);
 
@@ -163,7 +163,7 @@ impl Write for Udp {
     }
 }
 
-/// Flux Entertainment ouvert vers le pont.
+/// Open Entertainment stream to the bridge.
 pub struct Stream {
     ssl: SslStream<Udp>,
     area_id: String,
@@ -172,16 +172,16 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Bloquant (handshake DTLS) : à lancer hors de la boucle async.
+    /// Blocking (DTLS handshake): run it outside the async loop.
     pub fn connect(addr: &str, creds: &Credentials, area_id: &str) -> Result<Self> {
-        let psk = hex::decode(&creds.clientkey).context("clientkey invalide (hexadécimal attendu)")?;
+        let psk = hex::decode(&creds.clientkey).context("invalid clientkey (hex expected)")?;
         let identity = creds.username.clone();
         let mut ctx = SslContext::builder(SslMethod::dtls())?;
         ctx.set_verify(SslVerifyMode::NONE);
         ctx.set_min_proto_version(Some(SslVersion::DTLS1_2))?;
         ctx.set_max_proto_version(Some(SslVersion::DTLS1_2))?;
         ctx.set_cipher_list("PSK-AES128-GCM-SHA256")?;
-        // Notre « BIO » est un simple Read/Write : OpenSSL ne peut pas sonder la MTU.
+        // Our "BIO" is a plain Read/Write: OpenSSL cannot query the MTU.
         ctx.set_options(SslOptions::NO_QUERY_MTU);
         ctx.set_psk_client_callback(move |_ssl, _hint, id_buf, psk_buf| {
             let id = identity.as_bytes();
@@ -198,7 +198,7 @@ impl Stream {
         ssl.set_mtu(1200)?;
 
         let sock = UdpSocket::bind("0.0.0.0:0")?;
-        sock.connect(addr).with_context(|| format!("connexion UDP à {addr}"))?;
+        sock.connect(addr).with_context(|| format!("UDP connection to {addr}"))?;
         sock.set_read_timeout(Some(Duration::from_millis(1500)))?;
 
         let mut attempt = ssl.connect(Udp(sock));
@@ -206,18 +206,18 @@ impl Stream {
         let ssl = loop {
             match attempt {
                 Ok(s) => break s,
-                // Délai dépassé : on relance, OpenSSL retransmet la dernière salve.
+                // Timed out: try again, OpenSSL retransmits the last flight.
                 Err(HandshakeError::WouldBlock(mid)) if tries < 6 => {
                     tries += 1;
                     attempt = mid.handshake();
                 }
-                Err(e) => bail!("handshake DTLS avec le pont échoué : {e}"),
+                Err(e) => bail!("DTLS handshake with the bridge failed: {e}"),
             }
         };
         Ok(Self { ssl, area_id: area_id.into(), seq: 0, packet: Vec::with_capacity(52 + 7 * 20) })
     }
 
-    /// Envoie une image : une couleur (lumière linéaire) par canal.
+    /// Sends one frame: one color (linear light) per channel.
     pub fn send(&mut self, colors: &[(u8, Rgb)]) -> Result<()> {
         encode(&mut self.packet, &self.area_id, self.seq, colors);
         self.seq = self.seq.wrapping_add(1);
@@ -230,7 +230,7 @@ impl Stream {
     }
 }
 
-/// Paquet HueStream v2 (espace RGB, 16 bits par composante).
+/// HueStream v2 packet (RGB color space, 16 bits per component).
 pub fn encode(buf: &mut Vec<u8>, area_id: &str, seq: u8, colors: &[(u8, Rgb)]) {
     buf.clear();
     buf.extend_from_slice(b"HueStream");

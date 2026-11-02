@@ -6,14 +6,14 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
-    /// Dossier des pistes `.lueur`.
+    /// Folder holding the `.lueur` tracks.
     pub store: PathBuf,
     pub hue: HueConfig,
     pub jellyfin: JellyfinConfig,
-    /// Chemins vus par Jellyfin → chemins vus par lueur.
+    /// Paths as seen by Jellyfin → paths as seen by lueur.
     pub path_map: Vec<PathMap>,
     pub look: Look,
-    /// Analyse automatiquement un film lu qui n'a pas encore de piste.
+    /// Automatically analyze a film that is played without a track yet.
     pub auto_analyze: bool,
 }
 
@@ -23,11 +23,11 @@ pub struct HueConfig {
     pub bridge: String,
     pub username: String,
     pub clientkey: String,
-    /// Nom ou id de la zone de divertissement.
+    /// Entertainment area name or id.
     pub area: Option<String>,
-    /// Port DTLS (2100 sur un vrai pont).
+    /// DTLS port (2100 on a real bridge).
     pub dtls_port: Option<u16>,
-    /// URL REST de remplacement (tests).
+    /// Replacement REST URL (tests).
     pub base_url: Option<String>,
 }
 
@@ -36,7 +36,7 @@ pub struct HueConfig {
 pub struct JellyfinConfig {
     pub url: String,
     pub api_key: String,
-    /// Ne suivre qu'un appareil ou client (sous-chaîne, ex. « Apple TV »).
+    /// Only follow one device or client (substring, e.g. "Apple TV").
     pub device: Option<String>,
 }
 
@@ -52,7 +52,7 @@ impl Config {
             return Ok(Self { store: PathBuf::from("tracks"), ..Default::default() });
         }
         let s = std::fs::read_to_string(path)?;
-        let mut c: Config = serde_json::from_str(&s).with_context(|| format!("lecture de {}", path.display()))?;
+        let mut c: Config = serde_json::from_str(&s).with_context(|| format!("reading {}", path.display()))?;
         if c.store.as_os_str().is_empty() {
             c.store = PathBuf::from("tracks");
         }
@@ -85,6 +85,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(c.local_path("/media/movies/Dune (2021)/Dune.mkv"), PathBuf::from("/downloads/movies/Dune (2021)/Dune.mkv"));
-        assert_eq!(c.local_path("/autre/x.mkv"), PathBuf::from("/autre/x.mkv"));
+        assert_eq!(c.local_path("/other/x.mkv"), PathBuf::from("/other/x.mkv"));
     }
 }

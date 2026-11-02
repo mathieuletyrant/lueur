@@ -1,4 +1,4 @@
-//! Conversions sRGB <-> lumière linéaire et réglages de rendu.
+//! sRGB <-> linear light conversions and rendering settings.
 
 use std::sync::OnceLock;
 
@@ -32,20 +32,20 @@ pub fn luminance(c: Rgb) -> f32 {
     0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 }
 
-/// Réglages appliqués aux couleurs avant l'envoi au pont.
+/// Settings applied to colors before they are sent to the bridge.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct Look {
-    /// Multiplicateur de luminosité (1.0 = tel quel).
+    /// Brightness multiplier (1.0 = unchanged).
     pub brightness: f32,
-    /// Multiplicateur de saturation (1.0 = tel quel).
+    /// Saturation multiplier (1.0 = unchanged).
     pub saturation: f32,
-    /// Luminosité plancher en lumière linéaire (0 = noir autorisé).
+    /// Brightness floor in linear light (0 = black allowed).
     pub min_brightness: f32,
-    /// Constante de temps du lissage, en millisecondes (0 = aucun).
+    /// Smoothing time constant in milliseconds (0 = none).
     pub smoothing_ms: f32,
-    /// Décalage appliqué à la position Jellyfin, en millisecondes
-    /// (positif = les lampes vont plus loin dans le film).
+    /// Offset added to the Jellyfin position, in milliseconds
+    /// (positive = the lights run further ahead in the film).
     pub offset_ms: f64,
 }
 
@@ -63,7 +63,7 @@ impl Look {
         }
         let max = c[0].max(c[1]).max(c[2]);
         if max > 1.0 {
-            // Garde la teinte au lieu d'écrêter canal par canal.
+            // Keep the hue instead of clipping each channel separately.
             for v in &mut c {
                 *v /= max;
             }

@@ -1,6 +1,6 @@
-//! Analyse d'un fichier vidéo : ffmpeg décode (en matériel si possible) et
-//! réduit chaque image à 96×54 directement sur le GPU ; Rust ne voit passer
-//! que ~15 Ko par image, détecte les bandes noires et calcule la grille.
+//! Video file analysis: ffmpeg decodes (in hardware when possible) and
+//! shrinks each frame to 96×54 right on the GPU; Rust only sees ~15 KB per
+//! frame, detects black bars and computes the grid.
 
 use crate::color::{linear_to_srgb, srgb_to_linear};
 use crate::track::Track;
@@ -16,15 +16,15 @@ const RENDER_NODE: &str = "/dev/dri/renderD128";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum HwAccel {
-    /// VA-API si un GPU est présent, sinon logiciel.
+    /// VideoToolbox on macOS, VA-API when a GPU is present, software otherwise.
     Auto,
-    /// VA-API (Intel/AMD), recommandé sur le N100.
+    /// VA-API (Intel/AMD), recommended on the N100.
     Vaapi,
     /// Intel Quick Sync.
     Qsv,
     /// VideoToolbox (macOS).
     Videotoolbox,
-    /// Décodage logiciel.
+    /// Software decoding.
     None,
 }
 
@@ -51,9 +51,9 @@ pub fn analyze(video: &Path, opts: &Options) -> Result<(Track, Stats)> {
     };
     match run(video, opts, hw) {
         Ok(r) => Ok(r),
-        // Codec non géré par le GPU (ou pilote absent) : on retombe en logiciel.
+        // Codec not supported by the GPU (or missing driver): fall back to software.
         Err(e) if hw != HwAccel::None && opts.hwaccel == HwAccel::Auto => {
-            tracing::warn!("décodage matériel impossible ({e:#}), passage en logiciel");
+            tracing::warn!("hardware decoding failed ({e:#}), falling back to software");
             run(video, opts, HwAccel::None)
         }
         Err(e) => Err(e),
@@ -73,12 +73,12 @@ fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel) -> Vec<String> {
             format!("fps={fps},vpp_qsv=w={SAMPLE_W}:h={SAMPLE_H}:format=nv12,hwdownload,format=nv12")
         }
         HwAccel::Videotoolbox => {
-            // Décodage sur le GPU du Mac, images rapatriées puis réduites (coût négligeable).
+            // Decoded on the Mac's GPU, frames copied back then shrunk (negligible cost).
             a.extend(["-hwaccel", "videotoolbox"].map(String::from));
             format!("fps={fps},scale={SAMPLE_W}:{SAMPLE_H}:flags=area")
         }
         _ => {
-            // Image finale minuscule : le filtre de boucle ne sert à rien et coûte cher.
+            // Tiny output image: the loop filter is useless and expensive.
             a.extend(["-skip_loop_filter", "all"].map(String::from));
             if opts.threads > 0 {
                 a.extend(["-threads".into(), opts.threads.to_string()]);
@@ -101,7 +101,7 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("lancement de ffmpeg (est-il installé ?)")?;
+        .context("starting ffmpeg (is it installed?)")?;
     let mut out = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
     let err_reader = std::thread::spawn(move || {
@@ -127,7 +127,7 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
     let status = child.wait()?;
     let err = err_reader.join().unwrap_or_default();
     if !status.success() || frames.is_empty() {
-        bail!("ffmpeg a échoué ({status}) : {}", err.trim());
+        bail!("ffmpeg failed ({status}): {}", err.trim());
     }
     let track = Track {
         fps: opts.fps,
@@ -140,7 +140,7 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
     Ok((track, Stats { elapsed: start.elapsed().as_secs_f64(), hwaccel: hw }))
 }
 
-/// Zone utile de l'image (hors bandes noires), en pixels de l'échantillon.
+/// Useful area of the picture (excluding black bars), in sample pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Crop {
     pub top: usize,
@@ -149,10 +149,10 @@ pub struct Crop {
     pub right: usize,
 }
 
-/// Suivi des bandes noires (letterbox 2.39:1, pillarbox 4:3).
-/// Une bande se réduit tout de suite quand de l'image y apparaît, mais ne
-/// s'élargit qu'après avoir été noire en continu pendant `hold` images :
-/// une scène sombre ne fait donc pas « sauter » le cadrage.
+/// Black bar tracking (2.39:1 letterbox, 4:3 pillarbox).
+/// A bar shrinks as soon as picture shows up in it, but only grows after
+/// staying black for `hold` consecutive frames, so a dark scene does not
+/// make the framing jump.
 pub struct Bars {
     crop: [usize; 4],
     cand: [usize; 4],
@@ -169,18 +169,18 @@ impl Bars {
 
     pub fn update(&mut self, px: &[u8]) -> Crop {
         let (w, h) = (SAMPLE_W, SAMPLE_H);
-        // Canal le plus fort, pas la luminance : un bleu pur n'est pas une bande noire.
-        let luma = |i: usize| px[i].max(px[i + 1]).max(px[i + 2]);
+        // Strongest channel, not luminance: pure blue is not a black bar.
+        let level = |i: usize| px[i].max(px[i + 1]).max(px[i + 2]);
         let mut row_max = [0u8; SAMPLE_H];
         let mut col_max = [0u8; SAMPLE_W];
         for y in 0..h {
             for x in 0..w {
-                let l = luma((y * w + x) * 3);
+                let l = level((y * w + x) * 3);
                 row_max[y] = row_max[y].max(l);
                 col_max[x] = col_max[x].max(l);
             }
         }
-        // Image (quasi) noire : fondu, générique… on ne touche pas au cadrage.
+        // (Almost) black frame: fade, end credits… leave the framing alone.
         if row_max.iter().all(|&l| l < BLACK * 2) {
             return self.current();
         }
@@ -215,7 +215,7 @@ impl Bars {
     }
 }
 
-/// Moyenne par case, en lumière linéaire (une moyenne en sRGB assombrit).
+/// Per-cell average, in linear light (averaging in sRGB darkens).
 struct Grid {
     cols: usize,
     rows: usize,
@@ -268,15 +268,15 @@ mod tests {
     #[test]
     fn letterbox_is_detected_after_hold_and_ignores_dark_scenes() {
         let mut b = Bars::new(3);
-        let lb = frame(7..47, 200); // 7 lignes noires en haut et en bas
+        let lb = frame(7..47, 200); // 7 black rows at the top and bottom
         for _ in 0..2 {
             assert_eq!(b.update(&lb).top, 0);
         }
         assert_eq!(b.update(&lb).top, 7);
         assert_eq!(b.current().bottom, 7);
-        // Scène toute noire : le cadrage ne bouge pas.
+        // Fully black scene: the framing does not move.
         assert_eq!(b.update(&frame(0..0, 0)).top, 7);
-        // Image plein cadre : la bande se réduit immédiatement.
+        // Full-frame picture: the bar shrinks immediately.
         assert_eq!(b.update(&frame(0..54, 200)).top, 0);
     }
 }

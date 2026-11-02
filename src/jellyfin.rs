@@ -1,4 +1,4 @@
-//! Suivi de ce qui joue sur Jellyfin, et horloge de lecture locale.
+//! Tracks what is playing on Jellyfin, and the local playback clock.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -48,7 +48,7 @@ pub struct NowPlaying {
     pub name: String,
     pub path: Option<String>,
     pub device: String,
-    /// Position estimée au moment `at`, en secondes.
+    /// Estimated position at time `at`, in seconds.
     pub position: f64,
     pub paused: bool,
     pub at: Instant,
@@ -84,7 +84,7 @@ impl Jellyfin {
             .get("/Sessions?activeWithinSeconds=120")
             .send()
             .await
-            .context("Jellyfin injoignable")?
+            .context("Jellyfin unreachable")?
             .error_for_status()?
             .json()
             .await?;
@@ -101,8 +101,8 @@ impl Jellyfin {
                 }
             }
             let mut position = ps.position_ticks.unwrap_or(0) as f64 / 1e7;
-            // Les clients ne rapportent leur position que toutes les quelques
-            // secondes : on extrapole depuis le dernier rapport.
+            // Clients only report their position every few seconds:
+            // extrapolate from the last report.
             if !ps.is_paused {
                 if let Some(t) = s.last_playback_check_in.as_deref().and_then(parse_iso8601) {
                     let dt = now_wall - t;
@@ -128,7 +128,7 @@ impl Jellyfin {
         Ok(None)
     }
 
-    /// Certaines versions n'incluent pas le chemin dans la session.
+    /// Some versions do not include the path in the session.
     async fn item_path(&self, id: &str) -> Option<String> {
         if let Some(p) = self.paths.lock().await.get(id) {
             return p.clone();
@@ -152,7 +152,7 @@ fn unix_now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
 }
 
-/// `2026-11-02T20:15:30.1234567Z` → secondes Unix (UTC seulement, ce que renvoie Jellyfin).
+/// `2026-11-02T20:15:30.1234567Z` → Unix seconds (UTC only, which is what Jellyfin returns).
 pub fn parse_iso8601(s: &str) -> Option<f64> {
     let s = s.trim().trim_end_matches('Z');
     let (date, time) = s.split_once('T')?;
@@ -162,7 +162,7 @@ pub fn parse_iso8601(s: &str) -> Option<f64> {
     let mut t = time.split(':');
     let (hh, mm) = (t.next()?.parse::<i64>().ok()?, t.next()?.parse::<i64>().ok()?);
     let ss: f64 = t.next()?.parse().ok()?;
-    // Jours depuis 1970 (algorithme de Howard Hinnant).
+    // Days since 1970 (Howard Hinnant's algorithm).
     let y2 = if m <= 2 { y - 1 } else { y };
     let era = y2.div_euclid(400);
     let yoe = y2 - era * 400;
@@ -173,10 +173,10 @@ pub fn parse_iso8601(s: &str) -> Option<f64> {
     Some((days * 86_400 + hh * 3600 + mm * 60) as f64 + ss)
 }
 
-/// Horloge de lecture locale, recalée sur Jellyfin.
-/// Une fois calée, elle ne suit plus chaque rapport (bruités) : elle ne se
-/// recale que sur une vraie avance/retour, une pause ou un changement de
-/// média, et corrige doucement les petites dérives. Les lampes restent fluides.
+/// Local playback clock, kept in step with Jellyfin.
+/// Once locked it no longer follows every (noisy) report: it only re-syncs
+/// on a real seek, a pause or a media change, and gently corrects small
+/// drifts. The lights stay smooth.
 #[derive(Debug, Default)]
 pub struct Clock {
     item: Option<String>,
@@ -251,12 +251,12 @@ mod tests {
         };
         let mut c = Clock::default();
         assert!(matches!(c.update(&np(100.0, 0.0, false)), ClockEvent::Jump));
-        // Rapport légèrement bruité : ignoré.
+        // Slightly noisy report: ignored.
         assert!(matches!(c.update(&np(110.1, 10.0, false)), ClockEvent::None));
         assert!((c.at(t0 + Duration::from_secs(10)).unwrap() - 110.0).abs() < 1e-9);
-        // Avance rapide : recalage immédiat.
+        // Seek: immediate re-sync.
         assert!(matches!(c.update(&np(300.0, 11.0, false)), ClockEvent::Jump));
-        // Pause : l'horloge s'arrête.
+        // Pause: the clock stops.
         c.update(&np(301.0, 12.0, true));
         assert_eq!(c.at(t0 + Duration::from_secs(60)), Some(301.0));
     }

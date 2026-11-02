@@ -1,9 +1,9 @@
-//! Piste de couleurs : pour chaque instant du film, une petite grille de
-//! couleurs (par défaut 16×9) calculée une fois pour toutes à l'analyse.
+//! Color track: for every moment of the film, a small grid of colors
+//! (16×9 by default) computed once and for all during analysis.
 //!
-//! Format du fichier `.lueur` :
+//! `.lueur` file format:
 //! `LUEUR` | version u8 | fps f32 | cols u8 | rows u8 | frames u32 |
-//! taille source u64 | len u16 | chemin source (UTF-8) | zstd(grilles sRGB u8)
+//! source size u64 | len u16 | source path (UTF-8) | zstd(sRGB u8 grids)
 
 use crate::color::{srgb_to_linear, Rgb};
 use anyhow::{bail, Context, Result};
@@ -18,10 +18,10 @@ pub struct Track {
     pub fps: f32,
     pub cols: u8,
     pub rows: u8,
-    /// Taille du fichier vidéo au moment de l'analyse (détection des remplacements).
+    /// Size of the video file at analysis time (detects replaced files).
     pub source_size: u64,
     pub source: String,
-    /// Grilles concaténées, `cols * rows * 3` octets sRGB par image.
+    /// Concatenated grids, `cols * rows * 3` sRGB bytes per frame.
     pub frames: Vec<u8>,
 }
 
@@ -59,7 +59,7 @@ impl Track {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        // Écriture atomique : jamais de piste à moitié écrite lue par le lecteur.
+        // Atomic write: the player never reads a half-written track.
         let tmp = path.with_extension("lueur.tmp");
         std::fs::File::create(&tmp)?.write_all(&buf)?;
         std::fs::rename(&tmp, path)?;
@@ -69,13 +69,13 @@ impl Track {
     pub fn load(path: &Path) -> Result<Track> {
         let mut data = Vec::new();
         std::fs::File::open(path)
-            .with_context(|| format!("ouverture de {}", path.display()))?
+            .with_context(|| format!("opening {}", path.display()))?
             .read_to_end(&mut data)?;
         if data.len() < 25 || &data[..5] != MAGIC {
-            bail!("{} n'est pas une piste lueur", path.display());
+            bail!("{} is not a lueur track", path.display());
         }
         if data[5] != VERSION {
-            bail!("version de piste {} non gérée", data[5]);
+            bail!("unsupported track version {}", data[5]);
         }
         let fps = f32::from_le_bytes(data[6..10].try_into()?);
         let (cols, rows) = (data[10], data[11]);
@@ -86,13 +86,13 @@ impl Track {
         let frames = zstd::decode_all(&data[26 + src_len..])?;
         let t = Track { fps, cols, rows, source_size, source, frames };
         if t.frame_count() != count {
-            bail!("piste tronquée ({} images au lieu de {count})", t.frame_count());
+            bail!("truncated track ({} frames instead of {count})", t.frame_count());
         }
         Ok(t)
     }
 
-    /// Grille en lumière linéaire à l'instant `t` (secondes), interpolée
-    /// entre les deux images analysées les plus proches.
+    /// Grid in linear light at time `t` (seconds), interpolated between
+    /// the two nearest analyzed frames.
     pub fn sample(&self, t: f64, out: &mut Vec<Rgb>) {
         let n = self.frame_count();
         out.clear();
@@ -122,12 +122,12 @@ impl Track {
     }
 }
 
-/// Emplacement de la piste d'un fichier vidéo dans le dossier de pistes.
+/// Location of a video file's track in the track store.
 pub fn track_path(store: &Path, video: &Path) -> PathBuf {
-    // Chemin absolu : l'analyse en ligne de commande et le lecteur doivent tomber sur la même piste.
+    // Absolute path: command-line analysis and the player must land on the same track.
     let canon = std::fs::canonicalize(video);
     let video = canon.as_deref().unwrap_or(video);
-    // FNV-1a 64 bits : stable entre versions, contrairement au hasher de std.
+    // 64-bit FNV-1a: stable across versions, unlike std's hasher.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in video.to_string_lossy().as_bytes() {
         h ^= *b as u64;
@@ -140,7 +140,7 @@ pub fn track_path(store: &Path, video: &Path) -> PathBuf {
     store.join(format!("{stem}-{h:016x}.lueur"))
 }
 
-/// Une piste existe et correspond toujours au fichier (même taille).
+/// A track exists and still matches the file (same size).
 pub fn is_fresh(store: &Path, video: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(video) else { return false };
     let p = track_path(store, video);
@@ -160,8 +160,8 @@ mod tests {
     fn save_load_sample() {
         let dir = std::env::temp_dir().join(format!("lueur-test-{}", std::process::id()));
         let mut frames = vec![0u8; 2 * 2 * 3 * 2];
-        frames[..12].fill(0); // image 0 noire
-        frames[12..].fill(255); // image 1 blanche
+        frames[..12].fill(0); // frame 0 black
+        frames[12..].fill(255); // frame 1 white
         let t = Track { fps: 10.0, cols: 2, rows: 2, source_size: 42, source: "/x/film.mkv".into(), frames };
         let p = dir.join("t.lueur");
         t.save(&p).unwrap();
@@ -169,9 +169,9 @@ mod tests {
         assert_eq!(l.frame_count(), 2);
         assert_eq!(l.source, "/x/film.mkv");
         let mut g = Vec::new();
-        l.sample(0.05, &mut g); // à mi-chemin entre les deux images
+        l.sample(0.05, &mut g); // halfway between the two frames
         assert!((g[0][0] - 0.5).abs() < 1e-3);
-        l.sample(99.0, &mut g); // au-delà de la fin : dernière image
+        l.sample(99.0, &mut g); // past the end: last frame
         assert!((g[3][2] - 1.0).abs() < 1e-6);
         std::fs::remove_dir_all(dir).ok();
     }

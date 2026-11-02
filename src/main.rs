@@ -13,11 +13,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Synchronise des lampes Philips Hue avec les films lus sur Jellyfin.
+/// Syncs Philips Hue lights with the films played on Jellyfin.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
-    /// Fichier de configuration.
+    /// Configuration file.
     #[arg(short, long, env = "LUEUR_CONFIG", default_value = "lueur.json", global = true)]
     config: PathBuf,
     #[command(subcommand)]
@@ -26,41 +26,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Analyse des films (fichiers ou dossiers) et écrit leurs pistes de couleurs.
+    /// Analyzes films (files or folders) and writes their color tracks.
     Analyze {
         paths: Vec<PathBuf>,
-        /// Images analysées par seconde.
+        /// Frames analyzed per second.
         #[arg(long, default_value_t = 12.0)]
         fps: f32,
         #[arg(long, value_enum, default_value_t = analyze::HwAccel::Auto)]
         hwaccel: analyze::HwAccel,
-        /// Analyses en parallèle.
+        /// Parallel analyses.
         #[arg(short, long, default_value_t = 1)]
         jobs: usize,
-        /// Réanalyse même si une piste à jour existe.
+        /// Re-analyze even when an up-to-date track exists.
         #[arg(long)]
         force: bool,
     },
-    /// Affiche une piste (et la grille à un instant donné).
+    /// Shows a track (and its grid at a given time).
     Inspect {
         track: PathBuf,
-        /// Instant en secondes.
+        /// Time in seconds.
         #[arg(long)]
         at: Option<f64>,
     },
-    /// Appaire lueur avec le pont (appuyez sur son bouton).
+    /// Pairs lueur with the bridge (press its link button).
     Pair {
-        /// IP du pont.
+        /// Bridge IP.
         bridge: String,
     },
-    /// Liste les zones de divertissement du pont.
+    /// Lists the bridge's entertainment areas.
     Areas,
-    /// Envoie un arc-en-ciel sur la zone pour vérifier la configuration.
+    /// Sends a rainbow to the area to check the setup.
     Test {
         #[arg(long, default_value_t = 10.0)]
         seconds: f32,
     },
-    /// Suit Jellyfin et pilote les lampes.
+    /// Follows Jellyfin and drives the lights.
     Run,
 }
 
@@ -88,7 +88,7 @@ fn cmd_analyze(store: &Path, paths: &[PathBuf], opts: analyze::Options, jobs: us
     collect(paths, &mut files);
     let todo: Vec<_> = files.into_iter().filter(|f| force || !track::is_fresh(store, f)).collect();
     if todo.is_empty() {
-        println!("Rien à analyser, toutes les pistes sont à jour.");
+        println!("Nothing to analyze, all tracks are up to date.");
         return Ok(());
     }
     let total = todo.len();
@@ -106,7 +106,7 @@ fn cmd_analyze(store: &Path, paths: &[PathBuf], opts: analyze::Options, jobs: us
                         let n = done.fetch_add(1, Ordering::SeqCst) + 1;
                         let speed = t.duration() / s.elapsed;
                         println!(
-                            "[{n}/{total}] {name} : {:.0} min de film en {:.1} s (×{speed:.0} temps réel, {:?})",
+                            "[{n}/{total}] {name}: {:.0} min of film in {:.1} s ({speed:.0}× real time, {:?})",
                             t.duration() / 60.0,
                             s.elapsed,
                             s.hwaccel
@@ -114,7 +114,7 @@ fn cmd_analyze(store: &Path, paths: &[PathBuf], opts: analyze::Options, jobs: us
                     }
                     Err(e) => {
                         failed.fetch_add(1, Ordering::SeqCst);
-                        eprintln!("échec {name} : {e:#}");
+                        eprintln!("failed {name}: {e:#}");
                     }
                 }
             })
@@ -125,7 +125,7 @@ fn cmd_analyze(store: &Path, paths: &[PathBuf], opts: analyze::Options, jobs: us
     }
     let f = failed.load(Ordering::SeqCst);
     if f > 0 {
-        bail!("{f} analyse(s) en échec");
+        bail!("{f} analysis(es) failed");
     }
     Ok(())
 }
@@ -134,12 +134,12 @@ fn cmd_inspect(path: &Path, at: Option<f64>) -> Result<()> {
     let t = track::Track::load(path)?;
     let size = std::fs::metadata(path)?.len();
     println!("source   : {}", t.source);
-    println!("durée    : {:.1} min, {} images à {} i/s, grille {}×{}", t.duration() / 60.0, t.frame_count(), t.fps, t.cols, t.rows);
-    println!("fichier  : {:.1} Ko", size as f64 / 1024.0);
+    println!("duration : {:.1} min, {} frames at {} fps, {}×{} grid", t.duration() / 60.0, t.frame_count(), t.fps, t.cols, t.rows);
+    println!("file     : {:.1} KB", size as f64 / 1024.0);
     if let Some(at) = at {
         let mut g = Vec::new();
         t.sample(at, &mut g);
-        println!("grille à {at:.2} s :");
+        println!("grid at {at:.2} s:");
         for r in 0..t.rows as usize {
             let line: String = (0..t.cols as usize)
                 .map(|c| {
@@ -150,7 +150,7 @@ fn cmd_inspect(path: &Path, at: Option<f64>) -> Result<()> {
             println!("  {line}\x1b[0m");
         }
         let mid = g[(t.rows as usize / 2) * t.cols as usize + t.cols as usize / 2].map(|v| (color::linear_to_srgb(v) * 255.0).round() as u8);
-        println!("centre   : rgb({}, {}, {})", mid[0], mid[1], mid[2]);
+        println!("center   : rgb({}, {}, {})", mid[0], mid[1], mid[2]);
     }
     Ok(())
 }
@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Inspect { track, at } => cmd_inspect(&track, at)?,
         Cmd::Pair { bridge } => {
-            println!("Appuyez sur le bouton du pont {bridge} (60 s)…");
+            println!("Press the link button on bridge {bridge} (60 s)…");
             let base = cfg.hue.base_url.clone();
             for _ in 0..60 {
                 if let Some(c) = hue::pair(&bridge, base.as_deref()).await? {
@@ -179,12 +179,12 @@ async fn main() -> Result<()> {
                     cfg.hue.username = c.username;
                     cfg.hue.clientkey = c.clientkey;
                     cfg.save(&cli.config)?;
-                    println!("Appairé, identifiants enregistrés dans {}.", cli.config.display());
+                    println!("Paired, credentials saved to {}.", cli.config.display());
                     return Ok(());
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
-            bail!("bouton non pressé à temps");
+            bail!("link button not pressed in time");
         }
         Cmd::Areas => {
             let creds = hue::Credentials { username: cfg.hue.username.clone(), clientkey: cfg.hue.clientkey.clone() };
@@ -192,7 +192,7 @@ async fn main() -> Result<()> {
             for a in b.areas().await? {
                 println!("{} — {} ({}, {})", a.metadata.name, a.id, a.configuration_type, a.status);
                 for ch in &a.channels {
-                    println!("   canal {} : x={:+.2} y={:+.2} z={:+.2}", ch.channel_id, ch.position.x, ch.position.y, ch.position.z);
+                    println!("   channel {}: x={:+.2} y={:+.2} z={:+.2}", ch.channel_id, ch.position.x, ch.position.y, ch.position.z);
                 }
             }
         }

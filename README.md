@@ -1,18 +1,18 @@
 # lueur
 
-Synchronise des lampes Philips Hue avec les films lus sur Jellyfin, depuis un serveur Linux (Umbrel), sans PC Windows, sans Hue Sync et sans Sync Box.
+Syncs Philips Hue lights with the films played on Jellyfin, from a Linux server (Umbrel), with no Windows PC, no Hue Sync app and no Sync Box.
 
-## Principe
+## How it works
 
-1. **Analyse, une fois par film** : ffmpeg décode la vidéo (VA-API/Quick Sync sur un Intel N100) et la réduit à 96×54 sur le GPU. lueur ignore les bandes noires et enregistre une grille de 16×9 couleurs, 12 fois par seconde, dans un fichier `.lueur` compressé (quelques centaines de Ko pour un film de 2 h).
-2. **Lecture** : lueur interroge Jellyfin toutes les 500 ms, extrapole la position entre deux rapports et garde une horloge locale verrouillée (recalage seulement sur avance rapide, pause ou changement de média ; petites dérives corrigées en douceur).
-3. **Lampes** : chaque canal de la zone de divertissement prend la couleur de la partie de l'écran qui correspond à sa position, envoyée à 50 Hz via l'API Hue Entertainment (DTLS 1.2 PSK, UDP 2100). À l'arrêt, le flux est coupé et les lampes reprennent leur état.
+1. **Analysis, once per film**: ffmpeg decodes the video (VA-API/Quick Sync on an Intel N100, VideoToolbox on macOS) and shrinks it to 96×54 on the GPU. lueur skips black bars and stores a 16×9 color grid, 12 times per second, in a compressed `.lueur` file (a few hundred KB for a 2-hour film).
+2. **Playback**: lueur polls Jellyfin every 500 ms, extrapolates the position between two reports and keeps a locked local clock (re-synced only on a seek, a pause or a media change; small drifts are corrected gently).
+3. **Lights**: each channel of the entertainment area takes the color of the part of the screen matching its position, streamed at 50 Hz through the Hue Entertainment API (DTLS 1.2 PSK, UDP 2100). When playback stops, the stream is closed and the lights return to their previous state.
 
-Au moment du film, la charge est quasi nulle : aucun décodage, juste une lecture dans la piste.
+During the film the load is close to zero: no decoding, just a lookup in the track.
 
 ## Installation
 
-Il faut Rust, ffmpeg et OpenSSL. Sur macOS :
+You need Rust, ffmpeg and OpenSSL. On macOS:
 
 ```sh
 brew install rust ffmpeg openssl@3
@@ -20,31 +20,35 @@ git clone https://github.com/mathieuletyrant/lueur && cd lueur
 OPENSSL_DIR="$(brew --prefix openssl@3)" cargo build --release
 ```
 
-Le binaire est dans `target/release/lueur`. Sur macOS, l'analyse décode avec VideoToolbox.
+The binary is `target/release/lueur`.
 
-## Utilisation
+## Usage
 
 ```sh
-# 1. Appairer (appuyer sur le bouton du pont)
+# 1. Pair (press the bridge's link button)
 lueur pair 192.168.68.xx
-# 2. Voir les zones de divertissement et leurs canaux
+# 2. List the entertainment areas and their channels
 lueur areas
-# 3. Vérifier avec une mire arc-en-ciel
+# 3. Check with a rainbow test pattern
 lueur test --seconds 10
-# 4. Analyser la bibliothèque (ignore les films déjà à jour)
+# 4. Analyze the library (skips films that are already up to date)
 lueur analyze /downloads/movies /downloads/shows -j 2
-# 5. Suivre Jellyfin
+# 5. Follow Jellyfin
 lueur run
 ```
 
-`lueur inspect piste.lueur --at 754` affiche la grille à un instant donné dans le terminal.
+`lueur inspect track.lueur --at 754` prints the grid at a given time in the terminal.
+
+## Films on another machine
+
+lueur needs to read the video files for analysis, and the tracks must be in its `store` when playing. If the films live on a server (e.g. an Umbrel) and lueur runs elsewhere, mount the server's share (SMB) and use `path_map` to translate Jellyfin's paths to the mounted ones. On the first playback, lueur logs the path Jellyfin reports when no track is found.
 
 ## Configuration (`lueur.json`)
 
 ```json
 {
   "store": "/data/tracks",
-  "hue": { "bridge": "192.168.68.xx", "username": "…", "clientkey": "…", "area": "Salon TV" },
+  "hue": { "bridge": "192.168.68.xx", "username": "…", "clientkey": "…", "area": "Living room TV" },
   "jellyfin": { "url": "http://192.168.68.58:8096", "api_key": "…", "device": "Apple TV" },
   "path_map": [{ "from": "/media", "to": "/downloads" }],
   "look": { "brightness": 1.0, "saturation": 1.15, "min_brightness": 0.0, "smoothing_ms": 60, "offset_ms": 0 },
@@ -52,18 +56,18 @@ lueur run
 }
 ```
 
-- `path_map` : chemins vus par Jellyfin → chemins vus par lueur.
-- `jellyfin.device` : ne suivre qu'un appareil (sous-chaîne du nom ou du client).
-- `look.offset_ms` : si les lampes changent en retard sur les coupes, augmenter (ex. 500).
-- `auto_analyze` : un film lu sans piste est analysé en arrière-plan.
-- La clé API Jellyfin doit être une clé admin (pour obtenir le chemin du fichier).
+- `path_map`: paths as seen by Jellyfin → paths as seen by lueur.
+- `jellyfin.device`: only follow one device (substring of its name or client).
+- `look.offset_ms`: if the lights change late on cuts, increase it (e.g. 500).
+- `auto_analyze`: a film played without a track is analyzed in the background.
+- The Jellyfin API key must be an admin key (needed to get the file path).
 
 ## Tests
 
-`cargo test` couvre l'extraction (bandes noires, grille), le format de piste, le paquet HueStream, la correspondance canaux/écran, l'horloge et le parsing des dates Jellyfin. Le prototype a aussi été testé de bout en bout contre un faux pont (REST + `openssl s_server` en DTLS PSK) et un faux Jellyfin.
+`cargo test` covers extraction (black bars, grid), the track format, the HueStream packet, channel/screen mapping, the clock and Jellyfin date parsing. The prototype was also tested end to end against a fake bridge (REST + `openssl s_server` in DTLS PSK mode) and a fake Jellyfin.
 
-## À faire
+## To do
 
-- Websocket Jellyfin au lieu du sondage, webhook Radarr/Sonarr à l'import pour analyser automatiquement.
-- Interface web (réglages en direct, décalage depuis le canapé, aperçu de la piste).
-- Empaquetage en app Umbrel (`mathieu-lueur`).
+- Jellyfin websocket instead of polling, Radarr/Sonarr import webhook to analyze automatically.
+- Web UI (live settings, offset from the couch, track preview).
+- Umbrel app packaging (`mathieu-lueur`).
