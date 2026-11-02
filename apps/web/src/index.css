@@ -22,6 +22,13 @@
   /* Keep the scrollbar's room even when a page is short: content doesn't
      shift sideways when a panel opens or the page changes. */
   scrollbar-gutter: stable;
+  /* The ambilight glow around Now playing spills past the page on purpose:
+     never let it make the page scroll sideways (clip keeps sticky working). */
+  overflow-x: clip;
+}
+
+body {
+  overflow-x: clip;
 }
 
 body {
