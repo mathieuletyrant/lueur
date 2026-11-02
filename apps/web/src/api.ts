@@ -60,6 +60,14 @@ export type Area = {
 };
 export type JellyfinLibrary = { name: string; kind: string; locations: string[] };
 export type LibraryStats = Library & { exists: boolean; videos: number; analyzed: number };
+export type Video = {
+  library: string;
+  name: string;
+  folder: string;
+  path: string;
+  analyzed: boolean;
+  state: "running" | "queued" | null;
+};
 export type Dir = { path: string; parent: string | null; dirs: string[] };
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -80,12 +88,15 @@ export const api = {
   bridges: () => call<Bridge[]>("GET", "bridges"),
   pair: (host: string) => call<{ paired: boolean }>("POST", "bridge/pair", { host }),
   areas: () => call<Area[]>("GET", "areas"),
-  test: () => call<object>("POST", "test"),
+  test: (channel?: number) => call<object>("POST", "test", { channel }),
   jellyfinInfo: () => call<{ name: string; version: string }>("GET", "jellyfin/info"),
   jellyfinDevices: () => call<string[]>("GET", "jellyfin/devices"),
   jellyfinLibraries: () => call<JellyfinLibrary[]>("GET", "jellyfin/libraries"),
   libraries: () => call<LibraryStats[]>("GET", "libraries"),
   scan: () => call<{ queued: number }>("POST", "scan"),
+  stop: () => call<object>("POST", "scan/stop"),
+  videos: () => call<Video[]>("GET", "videos"),
+  analyze: (path: string) => call<{ queued: boolean }>("POST", "analyze", { path }),
   fs: (path: string) => call<Dir>("GET", `fs?path=${encodeURIComponent(path)}`),
 };
 

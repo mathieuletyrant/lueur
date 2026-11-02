@@ -149,7 +149,10 @@ function AreaCard() {
       />
       <div className="px-5 pt-2 pb-5">
         {p?.channels.length ? (
-          <AreaView channels={p.channels} />
+          <>
+            <AreaView channels={p.channels} onChannel={p.streaming ? undefined : (id) => api.test(id).catch((e: Error) => setError(e.message))} />
+            {!p.streaming && <p className="mt-2 text-center text-xs text-zinc-500">Click a light to make it blink.</p>}
+          </>
         ) : (
           <Empty icon={<Tv className="size-4" />} title="No area yet">
             Pair a bridge and pick an entertainment area in Setup.

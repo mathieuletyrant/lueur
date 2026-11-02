@@ -4,7 +4,7 @@ import { api, useLoad, type Library as Lib } from "../api";
 import { setupSteps, useApp } from "../App";
 import { AreaView } from "../components/AreaView";
 import { FolderPicker } from "../components/FolderPicker";
-import { Alert, Button, Card, cx, Field, Input, PageHeader, Toggle } from "../ui";
+import { Alert, Button, Card, cx, Field, Input, PageHeader, Pill, Toggle } from "../ui";
 
 export function Setup() {
   const { cfg, status } = useApp();
@@ -264,6 +264,10 @@ function AreaStep({ done, locked }: { done: boolean; locked: boolean }) {
       onToggle={() => setOpen(!open)}
       summary={done ? status?.player.area ?? "Selected" : "The lights that follow the screen"}
     >
+      <p className="mb-4 text-sm text-zinc-500">
+        Each dot is a light, or a segment of a gradient strip, where you placed it in the Hue app. lueur colors it from
+        that side of the screen. Click a dot of the selected area to make it blink.
+      </p>
       {areas.error && <Alert>{areas.error}</Alert>}
       {areas.loading && !areas.data ? (
         <Loader2 className="size-4 animate-spin text-zinc-500" />
@@ -278,9 +282,16 @@ function AreaStep({ done, locked }: { done: boolean; locked: boolean }) {
                 onClick={() => patch({ hue: { area: a.id } }).then(() => setOpen(false))}
                 className="flex-col items-stretch"
               >
-                <AreaView compact channels={a.channels.map((c) => ({ id: c.channel_id, x: c.position.x, z: c.position.z }))} />
+                <AreaView
+                  compact
+                  channels={a.channels.map((c) => ({ id: c.channel_id, x: c.position.x, z: c.position.z }))}
+                  onChannel={selected ? (id) => api.test(id).catch(() => {}) : undefined}
+                />
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium">{a.metadata.name}</p>
+                  <p className="flex items-center gap-2 text-sm font-medium">
+                    {a.metadata.name}
+                    {selected && <Pill tone="green">Selected</Pill>}
+                  </p>
                   <p className="text-xs text-zinc-500">{a.channels.length} channels · {a.configuration_type}</p>
                 </div>
               </Choice>
@@ -533,12 +544,14 @@ function Choice({
   children: ReactNode;
 }) {
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && e.target === e.currentTarget && (e.preventDefault(), onClick())}
       aria-pressed={selected}
       className={cx(
-        "flex items-center gap-3 rounded-xl border p-3.5 text-left transition",
+        "flex cursor-pointer items-center gap-3 rounded-xl border p-3.5 text-left transition outline-none focus-visible:ring-2 focus-visible:ring-glow-1/60",
         selected
           ? "border-glow-1/50 bg-glow-1/[0.06] ring-4 ring-glow-1/[0.07]"
           : "border-white/[0.08] bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]",
@@ -546,6 +559,6 @@ function Choice({
       )}
     >
       {children}
-    </button>
+    </div>
   );
 }

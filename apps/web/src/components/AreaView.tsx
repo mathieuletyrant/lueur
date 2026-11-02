@@ -4,7 +4,16 @@ type Ch = { id: number; x: number; z: number; color?: [number, number, number] }
 
 /** The Area seen from the couch: the TV in the middle, each Channel at its
  *  Hue position (x = left/right, z = floor/ceiling), glowing with its color. */
-export function AreaView({ channels, compact }: { channels: Ch[]; compact?: boolean }) {
+export function AreaView({
+  channels,
+  compact,
+  onChannel,
+}: {
+  channels: Ch[];
+  compact?: boolean;
+  /** Makes each light clickable (to blink it). */
+  onChannel?: (id: number) => void;
+}) {
   return (
     <div className={compact ? "relative aspect-[16/7]" : "relative aspect-[16/8]"}>
       <div className="absolute inset-[22%_26%] rounded-md border border-white/15 bg-gradient-to-b from-zinc-800/60 to-zinc-900/80 shadow-[0_20px_40px_-20px_rgb(0_0_0/0.8)]">
@@ -22,8 +31,10 @@ export function AreaView({ channels, compact }: { channels: Ch[]; compact?: bool
                 style={{ background: rgb(c.color!), opacity: 0.7 }}
               />
             )}
-            <div
-              className="relative grid size-6 place-items-center rounded-full border text-[10px] font-semibold tabular-nums transition-colors duration-300"
+            <Dot
+              onClick={onChannel && ((e) => (e.stopPropagation(), onChannel(c.id)))}
+              title={onChannel ? `Blink light ${c.id}` : `Light ${c.id}`}
+              className="relative grid size-6 place-items-center rounded-full border text-[10px] font-semibold tabular-nums transition duration-300"
               style={
                 lit
                   ? { background: rgb(c.color!), borderColor: "rgb(255 255 255 / 0.5)", color: "rgb(0 0 0 / 0.6)" }
@@ -31,10 +42,23 @@ export function AreaView({ channels, compact }: { channels: Ch[]; compact?: bool
               }
             >
               {c.id}
-            </div>
+            </Dot>
           </div>
         );
       })}
     </div>
+  );
+}
+
+function Dot({ onClick, ...p }: React.HTMLAttributes<HTMLElement> & { onClick?: (e: React.MouseEvent) => void }) {
+  return onClick ? (
+    <button
+      type="button"
+      {...p}
+      onClick={onClick}
+      className={p.className + " cursor-pointer hover:scale-125 hover:ring-4 hover:ring-white/15 focus-visible:outline-2 focus-visible:outline-glow-1"}
+    />
+  ) : (
+    <div {...p} />
   );
 }

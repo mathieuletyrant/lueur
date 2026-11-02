@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Clock, FolderSearch, Library, Loader2, ScanLine } from "lucide-react";
-import { api, useLoad } from "../api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, CheckCircle2, Clock, Film, FolderSearch, Library, Loader2, RotateCcw, ScanLine, Search, Square } from "lucide-react";
+import { api, useLoad, type Video } from "../api";
 import { useApp } from "../App";
-import { Alert, Button, Card, CardHeader, cx, Empty, PageHeader, Progress } from "../ui";
+import { Alert, Button, Card, CardHeader, cx, Empty, Input, PageHeader, Pill, Progress, Toggle } from "../ui";
 
 export function LibraryView() {
   const { cfg, status, patch, go } = useApp();
@@ -11,6 +11,7 @@ export function LibraryView() {
   const [note, setNote] = useState<string>();
   const [error, setError] = useState<string>();
   const q = status?.queue;
+  const busy = !!q && (q.running.length > 0 || q.pending > 0);
 
   // Refresh the counts each time an Analysis finishes.
   const done = useRef(q?.done);
@@ -38,9 +39,16 @@ export function LibraryView() {
         title="Library"
         subtitle="Films and shows lueur has analyzed, and the ones still to do."
         action={
-          <Button variant="primary" onClick={scan} loading={scanning} disabled={!cfg.libraries.length} icon={<ScanLine className="size-4" />}>
-            Scan now
-          </Button>
+          <div className="flex gap-2">
+            {busy && (
+              <Button onClick={() => api.stop().catch((e: Error) => setError(e.message))} icon={<Square className="size-3.5" />}>
+                Stop
+              </Button>
+            )}
+            <Button variant="primary" onClick={scan} loading={scanning} disabled={!cfg.libraries.length} icon={<ScanLine className="size-4" />}>
+              Scan now
+            </Button>
+          </div>
         }
       />
 
@@ -93,6 +101,8 @@ export function LibraryView() {
           })}
         </div>
       )}
+
+      {cfg.libraries.length > 0 && <Media />}
 
       <div className="mt-8 grid gap-5 lg:grid-cols-5">
         <Card className="lg:col-span-3">
@@ -173,5 +183,113 @@ export function LibraryView() {
         </Card>
       </div>
     </div>
+  );
+}
+
+const SHOWN = 60;
+
+/** Every film and episode, to analyze one right away. */
+function Media() {
+  const { status } = useApp();
+  const q = status?.queue;
+  const videos = useLoad(api.videos);
+  const [query, setQuery] = useState("");
+  const [missing, setMissing] = useState(false);
+  const [error, setError] = useState<string>();
+
+  // Follow the queue: a film starts, finishes or gets dropped.
+  const key = `${q?.done}|${q?.pending}|${q?.running.map((r) => r.name).join()}`;
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) first.current = false;
+    else videos.reload();
+  }, [key]);
+
+  const list = useMemo(() => {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return (videos.data ?? []).filter(
+      (v) => (!missing || !v.analyzed) && words.every((w) => `${v.name} ${v.folder} ${v.library}`.toLowerCase().includes(w)),
+    );
+  }, [videos.data, query, missing]);
+
+  const analyze = async (v: Video) => {
+    setError(undefined);
+    videos.setData(videos.data?.map((x) => (x.path === v.path ? { ...x, state: "queued" } : x)));
+    try {
+      await api.analyze(v.path);
+    } catch (e) {
+      setError((e as Error).message);
+      videos.reload();
+    }
+  };
+
+  const total = videos.data?.length ?? 0;
+  const todo = videos.data?.filter((v) => !v.analyzed).length ?? 0;
+
+  return (
+    <Card className="mt-8">
+      <CardHeader
+        title="Films and episodes"
+        subtitle={videos.data ? `${total} files · ${todo} without a track` : "Loading…"}
+        action={
+          <label className="flex items-center gap-2 text-xs text-zinc-400">
+            Missing only
+            <Toggle label="Missing only" checked={missing} onChange={setMissing} />
+          </label>
+        }
+      />
+      <div className="px-5 pt-4 pb-5">
+        <div className="relative">
+          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-zinc-500" />
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search a film, a show, a season…" className="pl-9" />
+        </div>
+        {error && <div className="mt-3"><Alert>{error}</Alert></div>}
+        {videos.error && <div className="mt-3"><Alert>{videos.error}</Alert></div>}
+
+        <ul className="mt-3 divide-y divide-white/[0.05]">
+          {list.slice(0, SHOWN).map((v) => {
+            const running = q?.running.find((r) => v.state === "running" && v.path.endsWith(r.name));
+            return (
+              <li key={v.path} className="flex items-center gap-3 py-2.5">
+                <Film className="size-4 shrink-0 text-zinc-500" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm text-zinc-100">{v.name}</p>
+                  <p className="truncate text-xs text-zinc-500">
+                    {v.library}
+                    {v.folder && ` · ${v.folder}`}
+                  </p>
+                </div>
+                {v.state === "running" ? (
+                  <span className="flex w-28 items-center gap-2">
+                    <Progress value={running?.progress ?? null} className="flex-1" />
+                    {running?.progress != null && <span className="text-xs text-zinc-500 tabular-nums">{Math.round(running.progress * 100)}%</span>}
+                  </span>
+                ) : v.state === "queued" ? (
+                  <Pill tone="blue">Queued</Pill>
+                ) : v.analyzed ? (
+                  <>
+                    <Pill tone="green">Analyzed</Pill>
+                    <Button variant="ghost" className="h-7 px-2" onClick={() => analyze(v)} aria-label={`Analyze ${v.name} again`} title="Analyze again">
+                      <RotateCcw className="size-3.5" />
+                    </Button>
+                  </>
+                ) : (
+                  <Button className="h-7 px-2.5 text-xs" onClick={() => analyze(v)}>
+                    Analyze
+                  </Button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        {videos.loading && !videos.data && <Loader2 className="mx-auto mt-4 size-4 animate-spin text-zinc-500" />}
+        {videos.data && list.length === 0 && <p className="py-6 text-center text-sm text-zinc-500">No match</p>}
+        {list.length > SHOWN && (
+          <p className="pt-3 text-xs text-zinc-500">
+            {list.length - SHOWN} more, refine the search to see them.
+          </p>
+        )}
+      </div>
+    </Card>
   );
 }
