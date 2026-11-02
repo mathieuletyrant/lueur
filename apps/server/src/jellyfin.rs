@@ -68,6 +68,48 @@ pub struct Jellyfin {
     device: Option<String>,
     http: reqwest::Client,
     paths: Mutex<HashMap<String, Option<String>>>,
+    seen: Mutex<Option<Seen>>,
+}
+
+/// The last position report we saw change, and when we saw it.
+#[derive(Debug, Clone)]
+struct Seen {
+    item: String,
+    ticks: i64,
+    at: Instant,
+}
+
+/// Position now, in seconds. Clients only report every few seconds, so we
+/// extrapolate from the moment *we* saw the reported position change (one
+/// poll late at most). `LastPlaybackCheckIn` is only used the first time:
+/// clients update it on their own schedule (JellyTV runs seconds ahead).
+fn estimate(
+    seen: &mut Option<Seen>,
+    item: &str,
+    ticks: i64,
+    paused: bool,
+    checkin_age: Option<f64>,
+    now: Instant,
+) -> f64 {
+    let position = ticks as f64 / 1e7;
+    match seen {
+        // Paused: the position doesn't move; restart from here on resume.
+        Some(s) if s.item == item && paused => {
+            *s = Seen { item: item.into(), ticks, at: now };
+            position
+        }
+        Some(s) if s.item == item && s.ticks == ticks => position + now.saturating_duration_since(s.at).as_secs_f64(),
+        Some(s) if s.item == item => {
+            *s = Seen { item: item.into(), ticks, at: now };
+            position
+        }
+        _ => {
+            let age = if paused { 0.0 } else { checkin_age.filter(|a| (0.0..6.0 * 3600.0).contains(a)).unwrap_or(0.0) };
+            let at = now.checked_sub(Duration::from_secs_f64(age)).unwrap_or(now);
+            *seen = Some(Seen { item: item.into(), ticks, at });
+            position + age
+        }
+    }
 }
 
 impl Jellyfin {
@@ -78,6 +120,7 @@ impl Jellyfin {
             device: device.map(|d| d.to_lowercase()),
             http: reqwest::Client::builder().timeout(Duration::from_secs(4)).build().unwrap(),
             paths: Mutex::new(HashMap::new()),
+            seen: Mutex::new(None),
         }
     }
 
@@ -110,17 +153,9 @@ impl Jellyfin {
                     continue;
                 }
             }
-            let mut position = ps.position_ticks.unwrap_or(0) as f64 / 1e7;
-            // Clients only report their position every few seconds:
-            // extrapolate from the last report.
-            if !ps.is_paused {
-                if let Some(t) = s.last_playback_check_in.as_deref().and_then(parse_iso8601) {
-                    let dt = now_wall - t;
-                    if (0.0..6.0 * 3600.0).contains(&dt) {
-                        position += dt;
-                    }
-                }
-            }
+            let checkin_age = s.last_playback_check_in.as_deref().and_then(parse_iso8601).map(|t| now_wall - t);
+            let ticks = ps.position_ticks.unwrap_or(0);
+            let position = estimate(&mut *self.seen.lock().await, &item.id, ticks, ps.is_paused, checkin_age, at);
             let path = match item.path {
                 Some(p) => Some(p),
                 None => self.item_path(&item.id).await,
@@ -303,6 +338,24 @@ mod tests {
         assert_eq!(parse_iso8601("1970-01-01T00:00:00Z"), Some(0.0));
         let t = parse_iso8601("2026-11-02T20:15:30.5000000Z").unwrap();
         assert!((t - 1_793_650_530.5).abs() < 1e-6, "{t}");
+    }
+
+    #[test]
+    fn position_extrapolates_from_when_the_report_changed() {
+        let t0 = Instant::now();
+        let at = |s: f64| t0 + Duration::from_secs_f64(s);
+        let mut seen = None;
+        // First sight: trust the check-in age once.
+        assert_eq!(estimate(&mut seen, "a", 100 * 10_000_000, false, Some(2.0), at(0.0)), 102.0);
+        // Same report 3 s later: extrapolate.
+        assert_eq!(estimate(&mut seen, "a", 100 * 10_000_000, false, Some(2.0), at(3.0)), 105.0);
+        // New report: it is the position now, whatever the check-in says.
+        assert_eq!(estimate(&mut seen, "a", 106 * 10_000_000, false, Some(9.0), at(6.0)), 106.0);
+        assert_eq!(estimate(&mut seen, "a", 106 * 10_000_000, false, None, at(7.5)), 107.5);
+        // Paused for a minute, then resumed with the same report: no jump.
+        assert_eq!(estimate(&mut seen, "a", 107 * 10_000_000, true, None, at(8.0)), 107.0);
+        assert_eq!(estimate(&mut seen, "a", 107 * 10_000_000, true, None, at(68.0)), 107.0);
+        assert_eq!(estimate(&mut seen, "a", 107 * 10_000_000, false, None, at(69.0)), 108.0);
     }
 
     #[test]
