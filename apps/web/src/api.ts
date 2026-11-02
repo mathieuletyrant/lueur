@@ -52,6 +52,7 @@ export type Status = {
     failed: { name: string; error: string }[];
   };
   last_scan: LastScan | null;
+  hold: { path: string; t: number } | null;
 };
 
 export type LastScan = { at: number; auto: boolean; queued: number; removed: number };
@@ -72,6 +73,7 @@ export type Video = {
   folder: string;
   path: string;
   analyzed: boolean;
+  duration: number | null;
   state: "running" | "queued" | null;
 };
 export type Dir = { path: string; parent: string | null; dirs: string[] };
@@ -102,6 +104,9 @@ export const api = {
   scan: () => call<LastScan>("POST", "scan"),
   stop: () => call<object>("POST", "scan/stop"),
   videos: () => call<Video[]>("GET", "videos"),
+  frameUrl: (path: string, t: number) => `/api/frame?path=${encodeURIComponent(path)}&t=${t.toFixed(1)}`,
+  hold: (path: string, t: number) => call<object>("PUT", "hold", { path, t }),
+  unhold: () => call<object>("DELETE", "hold"),
   analyze: (path: string) => call<{ queued: boolean }>("POST", "analyze", { path }),
   fs: (path: string) => call<Dir>("GET", `fs?path=${encodeURIComponent(path)}`),
 };

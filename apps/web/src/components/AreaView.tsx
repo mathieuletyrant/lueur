@@ -8,15 +8,19 @@ export function AreaView({
   channels,
   compact,
   onChannel,
+  screen,
 }: {
   channels: Ch[];
   compact?: boolean;
+  /** Image shown on the TV. */
+  screen?: string;
   /** Makes each light clickable (to blink it). */
   onChannel?: (id: number) => void;
 }) {
   return (
     <div className={compact ? "relative aspect-[16/7]" : "relative aspect-[16/8]"}>
       <div className="absolute inset-[22%_26%] rounded-md border border-white/15 bg-gradient-to-b from-zinc-800/60 to-zinc-900/80 shadow-[0_20px_40px_-20px_rgb(0_0_0/0.8)]">
+        {screen && <img src={screen} alt="" className="absolute inset-0 size-full rounded-md object-cover" />}
         <div className="absolute inset-x-[42%] -bottom-2 h-2 rounded-b bg-zinc-700/60" />
       </div>
       {channels.map((c) => {
