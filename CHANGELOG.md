@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.1](https://github.com/mathieuletyrant/lueur/compare/v0.13.0...v0.13.1) (2026-11-02)
+
+
+### 🐛 Fixes
+
+* **lights:** one owner for the Area's stream ([ddc42b7](https://github.com/mathieuletyrant/lueur/commit/ddc42b7a7e5d83cb31a7cc086000f17e64e102a0))
+* **sync:** one PlaybackClock module; resuming never adds the pause ([7a855d3](https://github.com/mathieuletyrant/lueur/commit/7a855d36fe5e810c5a631bc191d6eaf6761398b4))
+
 ## [0.13.0](https://github.com/mathieuletyrant/lueur/compare/v0.12.0...v0.13.0) (2026-11-02)
 
 
