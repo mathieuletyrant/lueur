@@ -139,6 +139,48 @@ impl Jellyfin {
             .error_for_status()?
             .json()
             .await?;
+        Ok(self.pick(sessions).await)
+    }
+
+    /// Follows Jellyfin's WebSocket, which pushes the sessions on every
+    /// playback report (pause, seek, progress) instead of us polling for
+    /// them. Calls `on` for each update; returns when the socket closes.
+    pub async fn follow(&self, mut on: impl FnMut(Option<NowPlaying>)) -> Result<()> {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+        let url = format!("{}/socket?api_key={}&deviceId=lueur", self.url.replacen("http", "ws", 1), self.key);
+        let mut req = url.into_client_request()?;
+        req.headers_mut().insert("Authorization", format!("MediaBrowser Token=\"{}\"", self.key).parse()?);
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.context("Jellyfin websocket")?;
+        // Sessions right away, then at least every second.
+        ws.send(Message::text(r#"{"MessageType":"SessionsStart","Data":"0,1000"}"#)).await?;
+        let mut keepalive = tokio::time::interval(Duration::from_secs(30));
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Envelope {
+            message_type: String,
+            #[serde(default)]
+            data: Value,
+        }
+        loop {
+            tokio::select! {
+                _ = keepalive.tick() => ws.send(Message::text(r#"{"MessageType":"KeepAlive"}"#)).await?,
+                msg = ws.next() => match msg.context("Jellyfin websocket closed")?? {
+                    Message::Text(t) => {
+                        let e: Envelope = serde_json::from_str(&t)?;
+                        if e.message_type == "Sessions" {
+                            on(self.pick(serde_json::from_value(e.data)?).await);
+                        }
+                    }
+                    Message::Close(_) => anyhow::bail!("Jellyfin websocket closed"),
+                    _ => {}
+                },
+            }
+        }
+    }
+
+    /// What the followed device plays, among `sessions`.
+    async fn pick(&self, sessions: Vec<Session>) -> Option<NowPlaying> {
         let now_wall = unix_now();
         let at = Instant::now();
         for s in sessions {
@@ -160,7 +202,7 @@ impl Jellyfin {
                 Some(p) => Some(p),
                 None => self.item_path(&item.id).await,
             };
-            return Ok(Some(NowPlaying {
+            return Some(NowPlaying {
                 item_id: item.id,
                 name: item.name,
                 path,
@@ -168,9 +210,9 @@ impl Jellyfin {
                 position,
                 paused: ps.is_paused,
                 at,
-            }));
+            });
         }
-        Ok(None)
+        None
     }
 
     /// Server name and version: checks the URL and the key.

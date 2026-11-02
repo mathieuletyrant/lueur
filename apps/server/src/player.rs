@@ -261,24 +261,37 @@ impl Player {
             let jf = jf.clone();
             let live = self.live.clone();
             tokio::spawn(async move {
-                let mut tick = tokio::time::interval(Duration::from_millis(500));
                 let mut errors = 0u32;
                 loop {
-                    tick.tick().await;
-                    match jf.now_playing().await {
-                        Ok(np) => {
-                            errors = 0;
+                    // Pushed by Jellyfin's WebSocket; polled for 30 s whenever it is down.
+                    let pushed = jf
+                        .follow(|np| {
                             live.status.lock().unwrap().jellyfin_error = None;
                             tx.send_replace(np);
-                        }
-                        Err(e) => {
-                            errors += 1;
-                            live.status.lock().unwrap().jellyfin_error = Some(format!("{e:#}"));
-                            if errors == 1 || errors % 20 == 0 {
-                                warn!("{e:#}");
+                        })
+                        .await;
+                    if let Err(e) = pushed {
+                        tracing::debug!("{e:#}, polling instead");
+                    }
+                    let mut tick = tokio::time::interval(Duration::from_millis(500));
+                    let until = Instant::now() + Duration::from_secs(30);
+                    while Instant::now() < until {
+                        tick.tick().await;
+                        match jf.now_playing().await {
+                            Ok(np) => {
+                                errors = 0;
+                                live.status.lock().unwrap().jellyfin_error = None;
+                                tx.send_replace(np);
                             }
-                            if errors >= 4 {
-                                tx.send_replace(None);
+                            Err(e) => {
+                                errors += 1;
+                                live.status.lock().unwrap().jellyfin_error = Some(format!("{e:#}"));
+                                if errors == 1 || errors % 20 == 0 {
+                                    warn!("{e:#}");
+                                }
+                                if errors >= 4 {
+                                    tx.send_replace(None);
+                                }
                             }
                         }
                     }

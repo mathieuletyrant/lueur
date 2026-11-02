@@ -23,7 +23,8 @@ No Sync Box, no PC, no Hue Sync app: each film is analyzed once, then your light
 - 🎬 **Any Jellyfin client**: Apple TV, TV, phone, browser. lueur follows playback, seeks and pauses
 - 🌈 **Per-light colors**: each light of the Hue entertainment area takes the color of its side of the screen, 50 times per second
 - 🎞️ **Black bars ignored**: letterbox and pillarbox are cropped before the colors are computed
-- ⏱️ **Locked clock**: Jellyfin's position is extrapolated and smoothed, the lights don't stutter between reports
+- ⏱️ **Locked clock**: playback reports are pushed by Jellyfin's WebSocket and timed by lueur itself, the lights don't stutter between reports
+- 🎚️ **Sync offset** on the Now page, to cancel a TV's or an app's delay
 - 💤 **Lights come back**: when playback stops, the lights return to their previous state
 
 **Analyze**
@@ -90,7 +91,7 @@ The image is amd64, tagged `latest`, `x.y` and `x.y.z`. `--device /dev/dri` is o
 
 1. In the Hue app, create an **entertainment area** around your TV (Settings → Entertainment areas) and place the lights where they are.
 2. In lueur → Setup, pick your bridge and press its link button.
-3. Lights late on cuts? Raise **Sync offset** in Look (e.g. +500 ms).
+3. Lights late or early on cuts? Use **Sync offset** on the Now page (±0.1 s buttons).
 
 <img src="docs/screenshots/look.jpg" alt="Look: brightness, saturation, smoothing and sync offset with a live preview" />
 
