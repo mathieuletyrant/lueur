@@ -33,6 +33,7 @@ No Sync Box, no PC, no Hue Sync app: each film is analyzed once, then your light
 - 📦 **Tiny tracks**: a 16×9 color grid 12 times per second, a few hundred KB per film
 - 🔄 **Auto scan**: new films and episodes are found every 5 min to 6 h, tracks of deleted or replaced files are cleaned up
 - 🔍 **On demand**: analyze everything missing, or a single film or episode from the list, stop at any time
+- 🌡️ **Gentle on the server**: a speed preference from *Gentle* (5×) to *Hurt my GPU*, analysis hours, lowest CPU priority
 - 🆕 **On first playback**: a film played without a track is analyzed first, and the lights join in as soon as it is done
 
 **App**

@@ -81,10 +81,18 @@ pub fn analyze_options() -> analyze::Options {
         progress: None,
         cancel: None,
         on_cpu: None,
+        max_speed: None,
     }
 }
 
-fn cmd_analyze(store: &Path, paths: &[PathBuf], opts: analyze::Options, jobs: usize, force: bool) -> Result<()> {
+fn cmd_analyze(
+    store: &Path,
+    paths: &[PathBuf],
+    opts: analyze::Options,
+    limits: config::AnalysisConfig,
+    jobs: usize,
+    force: bool,
+) -> Result<()> {
     let mut files = Vec::new();
     queue::collect(paths, &mut files);
     let todo: Vec<_> = files.into_iter().filter(|f| force || !track::is_fresh(store, f)).collect();
@@ -94,6 +102,7 @@ fn cmd_analyze(store: &Path, paths: &[PathBuf], opts: analyze::Options, jobs: us
     }
     println!("Analyzing {} file(s)…", todo.len());
     let q = queue::Queue::new(store.to_path_buf(), opts, jobs);
+    q.set_limits(limits);
     for f in todo {
         q.push(f);
     }
@@ -150,7 +159,8 @@ async fn main() -> Result<()> {
         Cmd::Analyze { paths, fps, hwaccel, jobs, force } => {
             let opts = analyze::Options { fps, hwaccel, ..analyze_options() };
             let store = cfg.store.clone();
-            tokio::task::spawn_blocking(move || cmd_analyze(&store, &paths, opts, jobs, force)).await??;
+            let limits = cfg.analysis.clone();
+            tokio::task::spawn_blocking(move || cmd_analyze(&store, &paths, opts, limits, jobs, force)).await??;
         }
         Cmd::Inspect { track, at } => cmd_inspect(&track, at)?,
         Cmd::Pair { bridge } => {
@@ -185,6 +195,7 @@ async fn main() -> Result<()> {
         Cmd::Run => {
             let live = Arc::new(player::Live { look: cfg.look.clone().into(), ..Default::default() });
             let q = queue::Queue::new(cfg.store.clone(), analyze_options(), cfg.jobs);
+            q.set_limits(cfg.analysis.clone());
             let stop = async {
                 tokio::signal::ctrl_c().await.ok();
             };

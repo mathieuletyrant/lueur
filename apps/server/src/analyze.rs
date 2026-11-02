@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub const SAMPLE_W: usize = 96;
 pub const SAMPLE_H: usize = 54;
@@ -43,6 +43,8 @@ pub struct Options {
     pub cancel: Option<Arc<AtomicBool>>,
     /// Set when the analysis decodes on the CPU (no GPU, or a codec the GPU can't take).
     pub on_cpu: Option<Arc<AtomicBool>>,
+    /// Fastest decoding, in times real time (keeps the server cool).
+    pub max_speed: Option<f32>,
 }
 
 impl Options {
@@ -138,6 +140,7 @@ fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel, codec: Option<&str>) -
     // Frames no other frame refers to (most B-frames) are skipped: about half
     // the decoding work, colors within 1/255, a cut at most ~1/8 s late.
     a.extend(["-skip_frame", "noref"].map(String::from));
+
     a.extend(["-i".into(), video.to_string_lossy().into_owned()]);
     // `V`, not `v`: skips cover pictures stored as video streams.
     a.extend(["-map", "0:V:0", "-an", "-sn", "-dn", "-vf"].map(String::from));
@@ -186,6 +189,15 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
             child.kill().ok();
             child.wait().ok();
             bail!("stopped");
+        }
+        // Speed limit: read slower than ffmpeg decodes; once the pipe is full, ffmpeg waits.
+        // (ffmpeg's own -readrate is unreliable across versions above ~8×.)
+        if let Some(s) = opts.max_speed.filter(|s| *s > 0.0) {
+            let video = (frames.len() / (opts.cols as usize * opts.rows as usize * 3)) as f64 / opts.fps as f64;
+            let ahead = video / s as f64 - start.elapsed().as_secs_f64();
+            if ahead > 0.0 {
+                std::thread::sleep(Duration::from_secs_f64(ahead.min(1.0)));
+            }
         }
     }
     let status = child.wait()?;
@@ -337,6 +349,7 @@ mod tests {
         assert!(c < i && a[c + 1] == "av1");
         assert!(a.contains(&"0:V:0".to_string()));
         assert!(a.windows(2).any(|w| w == ["-skip_frame", "noref"]));
+
         let a = ffmpeg_args(Path::new("f.mkv"), &opts, HwAccel::Vaapi, Some("hevc"));
         assert!(!a.contains(&"-c:v".to_string()));
     }

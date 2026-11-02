@@ -24,6 +24,41 @@ pub struct Config {
     /// Videos whose path contains one of these (case-insensitive) are never analyzed.
     pub exclude: Vec<String>,
     pub sync: SyncConfig,
+    pub analysis: AnalysisConfig,
+}
+
+/// How hard background analyses may work.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AnalysisConfig {
+    /// Fastest decoding, in times real time (0 = no limit).
+    pub max_speed: f32,
+    /// Analyze only during this window; a film you ask for or play starts anyway.
+    pub window: Option<Window>,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self { max_speed: 10.0, window: None }
+    }
+}
+
+/// A daily time window, in UTC minutes since midnight (the UI shows local
+/// time). `start > end` wraps around midnight.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+pub struct Window {
+    pub start: u32,
+    pub end: u32,
+}
+
+impl Window {
+    pub fn contains(&self, minute: u32) -> bool {
+        if self.start <= self.end {
+            (self.start..self.end).contains(&minute)
+        } else {
+            minute >= self.start || minute < self.end
+        }
+    }
 }
 
 /// How the playback clock follows Jellyfin.
@@ -61,6 +96,7 @@ impl Default for Config {
                 .map(String::from)
                 .to_vec(),
             sync: SyncConfig::default(),
+            analysis: AnalysisConfig::default(),
         }
     }
 }
@@ -136,6 +172,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_wraps_around_midnight() {
+        let night = Window { start: 23 * 60, end: 7 * 60 };
+        assert!(night.contains(0) && night.contains(23 * 60) && !night.contains(12 * 60) && !night.contains(7 * 60));
+        let day = Window { start: 9 * 60, end: 17 * 60 };
+        assert!(day.contains(9 * 60) && !day.contains(17 * 60) && !day.contains(0));
+    }
 
     #[test]
     fn path_mapping() {

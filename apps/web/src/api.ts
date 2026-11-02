@@ -25,6 +25,7 @@ export type Config = {
   auto_scan_minutes: number;
   exclude: string[];
   sync: SyncConfig;
+  analysis: { max_speed: number; window: { start: number; end: number } | null };
   jobs: number;
   paired: boolean;
   has_api_key: boolean;
@@ -56,6 +57,7 @@ export type Status = {
     next: string[];
     done: number;
     failed: { name: string; error: string }[];
+    waiting_for_window: boolean;
   };
   last_scan: LastScan | null;
   hold: { path: string; t: number } | null;

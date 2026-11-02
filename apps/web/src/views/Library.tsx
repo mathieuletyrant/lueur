@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Clock, Film, FolderSearch, Library, Loader2, RotateCcw, ScanLine, Search, Square } from "lucide-react";
 import { api, useLoad, type Video } from "../api";
 import { useApp } from "../App";
-import { Alert, Button, Card, CardHeader, cx, Empty, Input, PageHeader, Pill, Progress, RunningAnalysis, SwitchRow, Toggle } from "../ui";
+import { Alert, Button, Card, CardHeader, cx, Empty, Input, PageHeader, Pill, Progress, RunningAnalysis, Select, SwitchRow, Toggle } from "../ui";
 
 export function LibraryView() {
   const { cfg, status, patch, go } = useApp();
@@ -106,7 +106,13 @@ export function LibraryView() {
         <Card className="lg:col-span-3">
           <CardHeader
             title="Queue"
-            subtitle={q ? `${q.running.length} running · ${q.pending} waiting · ${q.done} done` : undefined}
+            subtitle={
+              q
+                ? q.waiting_for_window && !q.running.length && cfg.analysis.window
+                  ? `${q.pending} waiting for ${hh(toLocal(cfg.analysis.window.start))}`
+                  : `${q.running.length} running · ${q.pending} waiting · ${q.done} done`
+                : undefined
+            }
             action={
               <div className="flex items-center gap-2 text-xs text-zinc-500">
                 Parallel
@@ -224,6 +230,8 @@ function Automation() {
             </p>
           )}
         </div>
+        <Speed />
+        <AnalysisWindow />
         <Exclude />
         <SwitchRow
           className="border-t border-white/[0.06] pt-5"
@@ -234,6 +242,78 @@ function Automation() {
         />
       </div>
     </Card>
+  );
+}
+
+const SPEEDS = [
+  { x: 5, label: "Gentle", hint: "5× real time: a 2-hour film in about 25 min. Quiet and cool, for daytime." },
+  { x: 10, label: "Normal", hint: "10× real time: a 2-hour film in about 12 min." },
+  { x: 25, label: "Fast", hint: "25× real time: a 2-hour film in about 5 min. The server warms up." },
+  { x: 0, label: "Hurt my GPU", hint: "As fast as the GPU goes. Great for a first run at night, hot otherwise." },
+];
+
+/** How hard analyses may work, like Plex's transcoder preference. */
+function Speed() {
+  const { cfg, patch } = useApp();
+  const current = SPEEDS.find((s) => s.x === cfg.analysis.max_speed);
+  return (
+    <div className="border-t border-white/[0.06] pt-5">
+      <p className="text-sm font-medium">Analysis speed</p>
+      <div className="mt-3 flex flex-wrap gap-1 rounded-lg border border-white/10 p-0.5" role="radiogroup" aria-label="Analysis speed">
+        {SPEEDS.map((s) => (
+          <button
+            key={s.x}
+            role="radio"
+            aria-checked={cfg.analysis.max_speed === s.x}
+            onClick={() => patch({ analysis: { max_speed: s.x } })}
+            className={cx(
+              "h-7 flex-auto rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition",
+              cfg.analysis.max_speed === s.x ? "bg-white/10 text-zinc-50" : "text-zinc-500 hover:text-zinc-200",
+            )}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-zinc-500">{current?.hint ?? `${cfg.analysis.max_speed}× real time.`}</p>
+    </div>
+  );
+}
+
+// The server keeps the window in UTC minutes; the page shows local hours.
+const offset = new Date().getTimezoneOffset();
+const toUtc = (localHour: number) => (((localHour * 60 + offset) % 1440) + 1440) % 1440;
+const toLocal = (utcMin: number) => Math.floor(((((utcMin - offset) % 1440) + 1440) % 1440) / 60);
+const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
+
+/** Analyze only during some hours (a film you ask for or play starts anyway). */
+function AnalysisWindow() {
+  const { cfg, patch } = useApp();
+  const w = cfg.analysis.window;
+  const [start, end] = w ? [toLocal(w.start), toLocal(w.end)] : [1, 7];
+  const save = (s: number, e: number) => patch({ analysis: { window: { start: toUtc(s), end: toUtc(e) } } });
+  const hours = Array.from({ length: 24 }, (_, h) => h);
+  return (
+    <div className="space-y-3 border-t border-white/[0.06] pt-5">
+      <SwitchRow
+        label="Only at certain hours"
+        hint="Outside these hours, new videos wait. A film you play or ask to analyze starts anyway."
+        checked={!!w}
+        onChange={(on) => (on ? save(start, end) : patch({ analysis: { window: null } }))}
+      />
+      {w && (
+        <div className="flex items-center gap-2 text-sm text-zinc-400">
+          From
+          <Select value={start} onChange={(e) => save(Number(e.target.value), end)} className="w-24" aria-label="Start">
+            {hours.map((h) => <option key={h} value={h}>{hh(h)}</option>)}
+          </Select>
+          to
+          <Select value={end} onChange={(e) => save(start, Number(e.target.value))} className="w-24" aria-label="End">
+            {hours.map((h) => <option key={h} value={h}>{hh(h)}</option>)}
+          </Select>
+        </div>
+      )}
+    </div>
   );
 }
 

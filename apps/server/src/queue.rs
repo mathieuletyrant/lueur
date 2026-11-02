@@ -2,7 +2,7 @@
 //! Each running Analysis gets its own thread; at most `jobs` run at once.
 
 use crate::analyze;
-use crate::config::{Config, Library};
+use crate::config::{AnalysisConfig, Config, Library};
 use crate::track;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
 const VIDEO_EXT: &[&str] = &["mkv", "mp4", "m4v", "avi", "mov", "ts", "m2ts", "webm"];
@@ -108,6 +108,8 @@ struct Job {
 
 #[derive(Default)]
 struct State {
+    /// Asked for now (a film played, "Analyze"): ignores the window.
+    urgent: VecDeque<PathBuf>,
     pending: VecDeque<PathBuf>,
     running: Vec<Arc<Job>>,
     done: usize,
@@ -135,6 +137,8 @@ pub struct Snapshot {
     pub running: Vec<Running>,
     pub pending: usize,
     pub next: Vec<String>,
+    /// Videos wait for the analysis window to open.
+    pub waiting_for_window: bool,
     pub done: usize,
     pub failed: Vec<Failed>,
 }
@@ -143,6 +147,7 @@ pub struct Queue {
     store: PathBuf,
     opts: analyze::Options,
     jobs: AtomicUsize,
+    limits: Mutex<AnalysisConfig>,
     state: Mutex<State>,
     idle: Condvar,
 }
@@ -157,6 +162,7 @@ impl Queue {
             store,
             opts,
             jobs: AtomicUsize::new(jobs.max(1)),
+            limits: Default::default(),
             state: Default::default(),
             idle: Condvar::new(),
         })
@@ -167,29 +173,41 @@ impl Queue {
         self.pump(&mut self.state.lock().unwrap());
     }
 
+    pub fn set_limits(self: &Arc<Self>, limits: AnalysisConfig) {
+        *self.limits.lock().unwrap() = limits;
+        self.kick();
+    }
+
+    /// Starts what may start now (the window may have opened).
+    pub fn kick(self: &Arc<Self>) {
+        self.pump(&mut self.state.lock().unwrap());
+    }
+
+    fn in_window(&self) -> bool {
+        let minute = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / 60 % 1440) as u32;
+        self.limits.lock().unwrap().window.is_none_or(|w| w.contains(minute))
+    }
+
     /// Queues a video unless it is already queued or running. Returns whether it was added.
     pub fn push(self: &Arc<Self>, video: PathBuf) -> bool {
         self.add(video, false)
     }
 
-    /// Like `push`, but ahead of everything already waiting.
+    /// Like `push`, but ahead of everything already waiting, and regardless of the window.
     pub fn push_front(self: &Arc<Self>, video: PathBuf) -> bool {
         self.add(video, true)
     }
 
-    fn add(self: &Arc<Self>, video: PathBuf, front: bool) -> bool {
+    fn add(self: &Arc<Self>, video: PathBuf, urgent: bool) -> bool {
         let mut s = self.state.lock().unwrap();
-        if s.running.iter().any(|j| j.video == video) {
+        let queued = s.pending.contains(&video) || s.urgent.contains(&video);
+        if s.running.iter().any(|j| j.video == video) || (queued && !urgent) {
             return false;
         }
-        if let Some(i) = s.pending.iter().position(|p| *p == video) {
-            if !front {
-                return false;
-            }
-            s.pending.remove(i);
-        }
-        if front {
-            s.pending.push_front(video);
+        s.pending.retain(|p| *p != video);
+        s.urgent.retain(|p| *p != video);
+        if urgent {
+            s.urgent.push_front(video);
         } else {
             s.pending.push_back(video);
         }
@@ -201,6 +219,7 @@ impl Queue {
     pub fn stop(&self) {
         let mut s = self.state.lock().unwrap();
         s.pending.clear();
+        s.urgent.clear();
         for j in &s.running {
             j.cancel.store(true, Ordering::Relaxed);
         }
@@ -209,12 +228,13 @@ impl Queue {
     /// Videos waiting and running.
     pub fn queued(&self) -> (HashSet<PathBuf>, HashSet<PathBuf>) {
         let s = self.state.lock().unwrap();
-        (s.pending.iter().cloned().collect(), s.running.iter().map(|j| j.video.clone()).collect())
+        (s.urgent.iter().chain(&s.pending).cloned().collect(), s.running.iter().map(|j| j.video.clone()).collect())
     }
 
     fn pump(self: &Arc<Self>, s: &mut State) {
+        let open = self.in_window();
         while s.running.len() < self.jobs.load(Ordering::SeqCst) {
-            let Some(video) = s.pending.pop_front() else {
+            let Some(video) = s.urgent.pop_front().or_else(|| if open { s.pending.pop_front() } else { None }) else {
                 break;
             };
             let job = Arc::new(Job {
@@ -236,6 +256,7 @@ impl Queue {
             progress: Some(job.frames.clone()),
             cancel: Some(job.cancel.clone()),
             on_cpu: Some(job.on_cpu.clone()),
+            max_speed: Some(self.limits.lock().unwrap().max_speed),
             ..self.opts.clone()
         };
         let n = name(&job.video);
@@ -270,7 +291,11 @@ impl Queue {
     /// Blocks until nothing is queued or running.
     pub fn wait_idle(&self) {
         let s = self.state.lock().unwrap();
-        drop(self.idle.wait_while(s, |s| !s.running.is_empty() || !s.pending.is_empty()).unwrap());
+        drop(
+            self.idle
+                .wait_while(s, |s| !s.running.is_empty() || !s.pending.is_empty() || !s.urgent.is_empty())
+                .unwrap(),
+        );
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -292,8 +317,9 @@ impl Queue {
                         .map(|d| (j.frames.load(Ordering::Relaxed) as f64 / self.opts.fps as f64 / d).min(1.0)),
                 })
                 .collect(),
-            pending: s.pending.len(),
-            next: s.pending.iter().take(5).map(|p| name(p)).collect(),
+            pending: s.urgent.len() + s.pending.len(),
+            next: s.urgent.iter().chain(&s.pending).take(5).map(|p| name(p)).collect(),
+            waiting_for_window: !s.pending.is_empty() && !self.in_window(),
             done: s.done,
             failed: s.failed.iter().cloned().collect(),
         }
@@ -360,7 +386,7 @@ mod tests {
             q.push(f.into());
         }
         q.push_front("/nope/f.mkv".into());
-        assert!(q.state.lock().unwrap().pending.front().is_some_and(|p| p.ends_with("f.mkv")));
+        assert!(q.state.lock().unwrap().urgent.front().is_some_and(|p| p.ends_with("f.mkv")));
         q.stop();
         assert!(q.queued().0.is_empty());
         q.wait_idle();
