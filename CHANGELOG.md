@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/mathieuletyrant/lueur/compare/v0.16.1...v0.17.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **sync:** calibration clip to set the sync offset by eye ([03cf037](https://github.com/mathieuletyrant/lueur/commit/03cf037a1eaabad04ac2af55190a299ef6f3f3ec)), closes [#24](https://github.com/mathieuletyrant/lueur/issues/24)
+
 ## [0.16.1](https://github.com/mathieuletyrant/lueur/compare/v0.16.0...v0.16.1) (2026-11-02)
 
 
