@@ -143,13 +143,31 @@ impl Jellyfin {
         Ok(self.get("/System/Info").send().await.context("Jellyfin unreachable")?.error_for_status()?.json().await?)
     }
 
-    /// Names of the devices seen recently, for the device filter.
+    /// Names of the devices known to Jellyfin, most recently used first, for the device filter.
+    /// (`/Sessions` only lists clients connected right now.)
     pub async fn devices(&self) -> Result<Vec<String>> {
-        let sessions: Vec<Session> =
-            self.get("/Sessions?activeWithinSeconds=86400").send().await?.error_for_status()?.json().await?;
-        let mut names: Vec<_> = sessions.into_iter().map(|s| s.device_name).filter(|n| !n.is_empty()).collect();
-        names.sort();
-        names.dedup();
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Device {
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            date_last_activity: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Devices {
+            items: Vec<Device>,
+        }
+        let mut d: Devices = self.get("/Devices").send().await?.error_for_status()?.json().await?;
+        // ISO 8601 dates sort as strings.
+        d.items.sort_by(|a, b| b.date_last_activity.cmp(&a.date_last_activity));
+        let mut names: Vec<String> = Vec::new();
+        for n in d.items.into_iter().map(|d| d.name) {
+            if !n.is_empty() && !names.contains(&n) {
+                names.push(n);
+            }
+        }
         Ok(names)
     }
 
