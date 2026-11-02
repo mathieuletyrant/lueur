@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/mathieuletyrant/lueur/compare/v0.11.0...v0.12.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **look:** auto exposure, warm greys and film barcodes ([db04db4](https://github.com/mathieuletyrant/lueur/commit/db04db438667acf0049232337ca1fba30ac62ac7))
+* **web:** barcodes, exposure and warm greys; clearer sync settings ([cde308f](https://github.com/mathieuletyrant/lueur/commit/cde308f9820881b6792d7d395dd851e4a5620468))
+
 ## [0.11.0](https://github.com/mathieuletyrant/lueur/compare/v0.10.0...v0.11.0) (2026-11-02)
 
 
