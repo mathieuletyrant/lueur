@@ -44,6 +44,7 @@ export type Status = {
     channels: LiveChannel[];
     playing: {
       title: string;
+      path: string | null;
       device: string;
       position: number;
       duration: number | null;
@@ -115,7 +116,8 @@ export const api = {
   scan: () => call<LastScan>("POST", "scan"),
   stop: () => call<object>("POST", "scan/stop"),
   videos: () => call<Video[]>("GET", "videos"),
-  frameUrl: (path: string, t: number) => `/api/frame?path=${encodeURIComponent(path)}&t=${t.toFixed(1)}`,
+  frameUrl: (path: string, t: number, width = 960) =>
+    `/api/frame?path=${encodeURIComponent(path)}&t=${t.toFixed(1)}&w=${width}`,
   // The duration is in the URL so a new analysis isn't served from the browser cache.
   barcode: (path: string, duration: number) =>
     call<string[]>("GET", `barcode?path=${encodeURIComponent(path)}&d=${duration.toFixed(0)}`),

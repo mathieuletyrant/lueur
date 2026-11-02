@@ -70,8 +70,20 @@ export function MediaList() {
           {list.slice(0, shown).map((v) => {
             const running = q?.running.find((r) => v.state === "running" && v.path.endsWith(r.name));
             return (
-              <li key={v.path} className="flex items-center gap-3 py-2.5">
-                <Film className="size-4 shrink-0 text-zinc-500" />
+              <li key={v.path} className="flex items-center gap-4 py-3">
+                {/* A still from the film (15 % in); a plain slate until it is analyzed. */}
+                <div className="grid aspect-video w-24 shrink-0 place-items-center overflow-hidden rounded-md bg-zinc-900 ring-1 ring-white/10 sm:w-32">
+                  {v.duration != null ? (
+                    <img
+                      src={api.frameUrl(v.path, v.duration * 0.15, 320)}
+                      alt=""
+                      loading="lazy"
+                      className="size-full object-cover [animation:fade-in_.6s_ease]"
+                    />
+                  ) : (
+                    <Film className="size-4 text-zinc-600" />
+                  )}
+                </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm text-zinc-100">{v.name}</p>
                   <p className="truncate text-xs text-zinc-500">

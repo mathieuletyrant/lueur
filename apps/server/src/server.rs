@@ -483,6 +483,8 @@ impl App {
 struct FrameQuery {
     path: PathBuf,
     t: f64,
+    /// Width in pixels (160 to 1920, 960 by default).
+    w: Option<u32>,
 }
 
 /// One frame of a video, as a JPEG (to pick a moment to hold on the lights).
@@ -492,14 +494,15 @@ async fn frame(State(app): State<Arc<App>>, Query(q): Query<FrameQuery>) -> Resu
         std::process::Command::new("nice")
             .args(["-n", "19", "ffmpeg", "-v", "error", "-ss", &format!("{:.2}", q.t.max(0.0)), "-i"])
             .arg(&q.path)
-            .args(["-map", "0:V:0", "-frames:v", "1", "-vf", "scale=960:-2", "-f", "mjpeg", "pipe:1"])
+            .args(["-map", "0:V:0", "-frames:v", "1", "-vf", &format!("scale={}:-2", q.w.unwrap_or(960).clamp(160, 1920))])
+            .args(["-f", "mjpeg", "pipe:1"])
             .output()
     })
     .await??;
     if out.stdout.is_empty() {
         return Err(bad(format!("no frame: {}", String::from_utf8_lossy(&out.stderr).trim())));
     }
-    Ok(([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=3600")], out.stdout).into_response())
+    Ok(([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=86400")], out.stdout).into_response())
 }
 
 #[derive(Deserialize)]

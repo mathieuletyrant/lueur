@@ -39,6 +39,8 @@ pub struct Status {
 #[derive(Debug, Clone, Serialize)]
 pub struct Playing {
     pub title: String,
+    /// The video, as lueur sees it (for frames in the UI).
+    pub path: Option<PathBuf>,
     pub device: String,
     pub position: f64,
     pub duration: Option<f64>,
@@ -274,6 +276,7 @@ impl Player {
                 }
                 let mut st = self.status();
                 st.playing = np.map(|np| Playing {
+                    path: np.path.as_deref().map(|p| self.cfg.local_path(p)),
                     title: np.name,
                     device: np.device,
                     position: clock.position(np.at).unwrap_or_default(),
