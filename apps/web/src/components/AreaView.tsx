@@ -1,5 +1,5 @@
 import { useApp } from "../context";
-import { rgb } from "../ui";
+import { cx, rgb } from "../ui";
 
 /** Same stretch as the player (Look → Fit to area): the area's extent maps to 0..1. */
 function fitter(vals: number[], on: boolean) {
@@ -10,8 +10,32 @@ function fitter(vals: number[], on: boolean) {
 
 type Ch = { id: number; x: number; z: number; color?: [number, number, number] };
 
-/** The Area seen from the couch: the TV in the middle, each Channel where
- *  lueur reads the screen for it (x = left/right, z = floor/ceiling), glowing with its color. */
+/** The TV inside the view, in % of its box. */
+const TV = { left: 24, right: 76, top: 20, bottom: 80 };
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** Where a light sits on the TV's edge, from where it reads the screen (u, v in 0..1). */
+function onEdge(u: number, v: number) {
+  const x = TV.left + u * (TV.right - TV.left);
+  const y = TV.top + v * (TV.bottom - TV.top);
+  // The closest edge; left and right win near the corners, like a strip's columns.
+  const d = { left: u, right: 1 - u, top: v * 1.1, bottom: (1 - v) * 1.1 };
+  const side = (Object.keys(d) as (keyof typeof d)[]).reduce((a, b) => (d[a] <= d[b] ? a : b));
+  const inset = 5;
+  if (side === "left") return { side, x: TV.left, y: clamp(y, TV.top + inset, TV.bottom - inset) };
+  if (side === "right") return { side, x: TV.right, y: clamp(y, TV.top + inset, TV.bottom - inset) };
+  return { side, x: clamp(x, TV.left + inset, TV.right - inset), y: side === "top" ? TV.top : TV.bottom };
+}
+
+const LABEL = {
+  left: "right-full mr-2 top-1/2 -translate-y-1/2",
+  right: "left-full ml-2 top-1/2 -translate-y-1/2",
+  top: "bottom-full mb-1.5 left-1/2 -translate-x-1/2",
+  bottom: "top-full mt-1.5 left-1/2 -translate-x-1/2",
+};
+
+/** The Area seen from the couch, as an ambilight: each Channel is a LED on
+ *  the edge of the TV it reads, washing the wall behind with its color. */
 export function AreaView({
   channels,
   compact,
@@ -28,52 +52,79 @@ export function AreaView({
   const { cfg } = useApp();
   const fx = fitter(channels.map((c) => c.x), cfg.look.fit_area);
   const fz = fitter(channels.map((c) => c.z), cfg.look.fit_area);
+  const lights = channels.map((c) => ({
+    ...c,
+    ...onEdge(fx(c.x), 1 - fz(c.z)),
+    lit: !!c.color?.some((v) => v > 4),
+  }));
+
   return (
-    <div className={compact ? "relative aspect-[16/7]" : "relative aspect-[16/8]"}>
-      <div className="absolute inset-[22%_26%] rounded-md border border-white/15 bg-gradient-to-b from-zinc-800/60 to-zinc-900/80 shadow-[0_20px_40px_-20px_rgb(0_0_0/0.8)]">
-        {screen && <img src={screen} alt="" className="absolute inset-0 size-full rounded-md object-cover" />}
-        <div className="absolute inset-x-[42%] -bottom-2 h-2 rounded-b bg-zinc-700/60" />
+    <div className={cx("relative isolate select-none", compact ? "aspect-[16/7]" : "aspect-[16/8]")}>
+      {/* The wall: a soft wash per lit light, centred on the TV's edge. Gradients,
+          not CSS blur, which Safari clips to a hard edge. */}
+      {lights
+        .filter((l) => l.lit)
+        .map((l) => (
+          <div
+            key={`wash-${l.id}`}
+            aria-hidden
+            className="pointer-events-none absolute aspect-square w-[44%] -translate-x-1/2 -translate-y-1/2"
+            style={{
+              left: `${l.x}%`,
+              top: `${l.y}%`,
+              background: `radial-gradient(closest-side, ${rgb(l.color!)}, transparent)`,
+              opacity: 0.5,
+              mixBlendMode: "screen",
+            }}
+          />
+        ))}
+
+      {/* The TV, in front of the wall. */}
+      <div
+        className="absolute overflow-hidden rounded-md border border-white/15 bg-zinc-950 shadow-[0_24px_48px_-24px_rgb(0_0_0/0.9)]"
+        style={{ left: `${TV.left}%`, right: `${100 - TV.right}%`, top: `${TV.top}%`, bottom: `${100 - TV.bottom}%` }}
+      >
+        {screen ? (
+          <img src={screen} alt="" className="size-full object-cover" />
+        ) : (
+          <div className="size-full bg-gradient-to-b from-zinc-800/50 to-zinc-950" />
+        )}
       </div>
-      {channels.map((c) => {
-        const lit = c.color && c.color.some((v) => v > 4);
-        const left = `${fx(c.x) * 76 + 12}%`;
-        const top = `${(1 - fz(c.z)) * 72 + 14}%`;
-        return (
-          <div key={c.id} className="absolute -translate-x-1/2 -translate-y-1/2" style={{ left, top }}>
-            {lit && (
-              <div
-                className="absolute top-1/2 left-1/2 size-16 -translate-x-1/2 -translate-y-1/2 rounded-full blur-xl transition-colors duration-300"
-                style={{ background: rgb(c.color!), opacity: 0.7 }}
-              />
-            )}
-            <Dot
-              onClick={onChannel && ((e) => (e.stopPropagation(), onChannel(c.id)))}
-              title={onChannel ? `Blink light ${c.id}` : `Light ${c.id}`}
-              className="relative grid size-6 place-items-center rounded-full border text-[10px] font-semibold tabular-nums transition duration-300"
-              style={
-                lit
-                  ? { background: rgb(c.color!), borderColor: "rgb(255 255 255 / 0.5)", color: "rgb(0 0 0 / 0.6)" }
-                  : { background: "#18181b", borderColor: "rgb(255 255 255 / 0.15)", color: "#a1a1aa" }
-              }
-            >
-              {c.id}
-            </Dot>
-          </div>
+      <div aria-hidden className="absolute left-[45%] h-[3%] w-[10%] rounded-b bg-zinc-800" style={{ top: `${TV.bottom}%` }} />
+
+      {/* The LEDs on the TV's edge, their channel number outside. */}
+      {lights.map((l) => {
+        const style = {
+          left: `${l.x}%`,
+          top: `${l.y}%`,
+          ...(l.lit
+            ? { background: rgb(l.color!), borderColor: "rgb(255 255 255 / 0.6)", boxShadow: `0 0 10px 2px ${rgb(l.color!)}` }
+            : { background: "#27272a", borderColor: "rgb(255 255 255 / 0.2)" }),
+        };
+        const className = cx("group absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border transition");
+        const label = (
+          <span className={cx("absolute text-[10px] font-medium tabular-nums text-zinc-400 group-hover:text-zinc-100", LABEL[l.side])}>
+            {l.id}
+          </span>
+        );
+        return onChannel ? (
+          <button
+            key={l.id}
+            type="button"
+            title={`Blink light ${l.id}`}
+            // Inside a clickable area card in Settings: don't also select the card.
+            onClick={(e) => (e.stopPropagation(), onChannel(l.id))}
+            className={cx(className, "cursor-pointer hover:scale-150 focus-visible:outline-2 focus-visible:outline-glow-1")}
+            style={style}
+          >
+            {label}
+          </button>
+        ) : (
+          <span key={l.id} title={`Light ${l.id}`} className={className} style={style}>
+            {label}
+          </span>
         );
       })}
     </div>
-  );
-}
-
-function Dot({ onClick, ...p }: React.HTMLAttributes<HTMLElement> & { onClick?: (e: React.MouseEvent) => void }) {
-  return onClick ? (
-    <button
-      type="button"
-      {...p}
-      onClick={onClick}
-      className={p.className + " cursor-pointer hover:scale-125 hover:ring-4 hover:ring-white/15 focus-visible:outline-2 focus-visible:outline-glow-1"}
-    />
-  ) : (
-    <div {...p} />
   );
 }

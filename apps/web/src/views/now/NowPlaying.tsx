@@ -30,8 +30,14 @@ export function NowPlaying() {
         {lit.map((c) => (
           <div
             key={c.id}
-            className="absolute size-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-50 blur-3xl transition-colors duration-700"
-            style={{ left: `${((c.x + 1) / 2) * 100}%`, top: `${((1 - c.z) / 2) * 100}%`, background: rgb(c.color) }}
+            className="absolute aspect-square w-1/2 -translate-x-1/2 -translate-y-1/2"
+            style={{
+              left: `${((c.x + 1) / 2) * 100}%`,
+              top: `${((1 - c.z) / 2) * 100}%`,
+              // A gradient, not CSS blur: Safari clips blur to a hard edge.
+              background: `radial-gradient(closest-side, ${rgb(c.color)}, transparent)`,
+              opacity: 0.55,
+            }}
           />
         ))}
       </div>
