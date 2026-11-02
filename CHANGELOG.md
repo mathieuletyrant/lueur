@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0](https://github.com/mathieuletyrant/lueur/compare/v0.6.0...v0.7.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **web:** sync offset on the Now page, with ±0.1 s buttons, out of Look ([fa337ef](https://github.com/mathieuletyrant/lueur/commit/fa337ef9347a29d9f3946ab9388b9c15c367593b))
+
+
+### 🐛 Fixes
+
+* **jellyfin:** extrapolate the position from when the report changed ([88ed7c6](https://github.com/mathieuletyrant/lueur/commit/88ed7c69e8ac7171fe7c641338a86869ad87777a))
+* **look:** sync offset up to ±10 s ([25351f2](https://github.com/mathieuletyrant/lueur/commit/25351f2b188c83aad396ca1ffeeefa0c2fe980da))
+* **web:** draw lights where they read the screen, around the TV instead of over it ([f9c0320](https://github.com/mathieuletyrant/lueur/commit/f9c0320ffd05f07f03fb7f92cb70ddd4adc163e3))
+
 ## [0.6.0](https://github.com/mathieuletyrant/lueur/compare/v0.5.0...v0.6.0) (2026-11-02)
 
 
