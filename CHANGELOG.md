@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/mathieuletyrant/lueur/compare/v0.9.0...v0.10.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **analysis:** speed preference and analysis hours ([91b8aae](https://github.com/mathieuletyrant/lueur/commit/91b8aae194db9baa75006f9c819d7527bb3f60f1))
+
 ## [0.9.0](https://github.com/mathieuletyrant/lueur/compare/v0.8.1...v0.9.0) (2026-11-02)
 
 
