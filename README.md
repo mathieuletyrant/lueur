@@ -30,8 +30,9 @@ No Sync Box, no PC, no Hue Sync app: each film is analyzed once, then your light
 
 - ⚡ **Once per film**: ffmpeg decodes on the GPU (VA-API on Intel, VideoToolbox on macOS) and only keeps a tiny image per frame, many times faster than real time
 - 📦 **Tiny tracks**: a 16×9 color grid 12 times per second, a few hundred KB per film
-- 🔍 **Scan** your libraries, or analyze a single film or episode from the list, stop at any time
-- 🆕 **On first playback**: a film played without a track can be queued automatically
+- 🔄 **Auto scan**: new films and episodes are found every 5 min to 6 h, tracks of deleted or replaced files are cleaned up
+- 🔍 **On demand**: analyze everything missing, or a single film or episode from the list, stop at any time
+- 🆕 **On first playback**: a film played without a track is analyzed first, and the lights join in as soon as it is done
 
 **App**
 

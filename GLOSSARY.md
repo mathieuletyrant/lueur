@@ -27,8 +27,16 @@ A Jellyfin library (movies, shows) that lueur follows, paired with the folder wh
 _Avoid_: Folder, collection, path_map
 
 **Scan**:
-A walk through all Libraries that queues an Analysis for every video without an up-to-date Track.
+A walk through all Libraries that queues an Analysis for every video without an up-to-date Track, and deletes Orphan Tracks.
 _Avoid_: Sync, refresh, import
+
+**Auto scan**:
+A Scan lueur runs on its own at a regular interval, so new videos get their Track without anyone asking.
+_Avoid_: Watcher, sync, cron
+
+**Orphan Track**:
+A Track whose video no longer exists (deleted, or replaced by a better version under another name).
+_Avoid_: Stale track, dead track
 
 **Analysis**:
 The one-time decoding of a video file into its Track.
