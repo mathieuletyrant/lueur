@@ -1,0 +1,11 @@
+{
+  "name": "lueur",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build && cargo build --release",
+    "check": "pnpm --filter web typecheck && cargo test"
+  },
+  "packageManager": "pnpm@11.15.1"
+}
