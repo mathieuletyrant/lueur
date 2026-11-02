@@ -5,8 +5,8 @@
 //! `LUEUR` | version u8 | fps f32 | cols u8 | rows u8 | frames u32 |
 //! source size u64 | len u16 | source path (UTF-8) | zstd(sRGB u8 grids)
 
-use crate::color::{srgb_to_linear, Rgb};
-use anyhow::{bail, Context, Result};
+use crate::color::{Rgb, srgb_to_linear};
+use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -68,9 +68,7 @@ impl Track {
 
     pub fn load(path: &Path) -> Result<Track> {
         let mut data = Vec::new();
-        std::fs::File::open(path)
-            .with_context(|| format!("opening {}", path.display()))?
-            .read_to_end(&mut data)?;
+        std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?.read_to_end(&mut data)?;
         if data.len() < 25 || &data[..5] != MAGIC {
             bail!("{} is not a lueur track", path.display());
         }
@@ -142,9 +140,13 @@ pub fn track_path(store: &Path, video: &Path) -> PathBuf {
 
 /// A track exists and still matches the file (same size).
 pub fn is_fresh(store: &Path, video: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(video) else { return false };
+    let Ok(meta) = std::fs::metadata(video) else {
+        return false;
+    };
     let p = track_path(store, video);
-    let Ok(mut f) = std::fs::File::open(&p) else { return false };
+    let Ok(mut f) = std::fs::File::open(&p) else {
+        return false;
+    };
     let mut head = [0u8; 24];
     if f.read_exact(&mut head).is_err() || &head[..5] != MAGIC {
         return false;

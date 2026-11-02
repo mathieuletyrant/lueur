@@ -1,15 +1,15 @@
 //! Main loop: follows Jellyfin, loads the track of the current film and
 //! streams colors to the entertainment area at 50 frames per second.
 
-use crate::analyze;
-use crate::color::{Look, Rgb};
+use crate::color::{Look, Rgb, linear_to_srgb};
 use crate::config::Config;
 use crate::hue::{Area, Bridge, Channel, Credentials, Stream};
 use crate::jellyfin::{Clock, ClockEvent, Jellyfin, NowPlaying};
+use crate::queue::Queue;
 use crate::track::{self, Track};
 use anyhow::{Context, Result};
-use std::collections::HashSet;
-use std::path::PathBuf;
+use serde::Serialize;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -94,22 +94,83 @@ struct Session {
     stream: Stream,
 }
 
+/// What the player is doing, for the UI.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Status {
+    /// Why the player is not running (not paired, bridge unreachable…).
+    pub error: Option<String>,
+    pub jellyfin_error: Option<String>,
+    pub area: Option<String>,
+    pub playing: Option<Playing>,
+    pub streaming: bool,
+    /// Area channels with the color they show right now.
+    pub channels: Vec<LiveChannel>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Playing {
+    pub title: String,
+    pub device: String,
+    pub position: f64,
+    pub duration: Option<f64>,
+    pub paused: bool,
+    pub has_track: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveChannel {
+    pub id: u8,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    /// sRGB, black when not streaming.
+    pub color: [u8; 3],
+}
+
+/// State shared between the player and the API: the Look can change while
+/// a film plays, the status is read by the UI.
+#[derive(Default)]
+pub struct Live {
+    pub look: Mutex<Look>,
+    pub status: Mutex<Status>,
+}
+
 pub struct Player {
     cfg: Config,
     bridge: Arc<Bridge>,
     area: Area,
     dtls_addr: String,
-    analyzing: Arc<Mutex<HashSet<PathBuf>>>,
+    live: Arc<Live>,
+    queue: Arc<Queue>,
 }
 
 impl Player {
-    pub async fn new(cfg: Config) -> Result<Self> {
+    pub async fn new(cfg: Config, live: Arc<Live>, queue: Arc<Queue>) -> Result<Self> {
         let creds = Credentials { username: cfg.hue.username.clone(), clientkey: cfg.hue.clientkey.clone() };
         let bridge = Bridge::new(&cfg.hue.bridge, creds, cfg.hue.base_url.as_deref());
         let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
         info!("area \"{}\": {} channel(s)", area.metadata.name, area.channels.len());
         let dtls_addr = format!("{}:{}", cfg.hue.bridge, cfg.hue.dtls_port.unwrap_or(2100));
-        Ok(Self { cfg, bridge: Arc::new(bridge), area, dtls_addr, analyzing: Default::default() })
+        *live.status.lock().unwrap() = Status {
+            area: Some(area.metadata.name.clone()),
+            channels: area
+                .channels
+                .iter()
+                .map(|c| LiveChannel {
+                    id: c.channel_id,
+                    x: c.position.x,
+                    y: c.position.y,
+                    z: c.position.z,
+                    color: [0; 3],
+                })
+                .collect(),
+            ..Default::default()
+        };
+        Ok(Self { cfg, bridge: Arc::new(bridge), area, dtls_addr, live, queue })
+    }
+
+    fn status(&self) -> std::sync::MutexGuard<'_, Status> {
+        self.live.status.lock().unwrap()
     }
 
     async fn open(&self) -> Result<Session> {
@@ -142,30 +203,25 @@ impl Player {
             }
             Err(_) => warn!("no track for \"{}\" (Jellyfin path: {jpath}, local path: {})", np.name, video.display()),
         }
-        if self.cfg.auto_analyze && self.analyzing.lock().unwrap().insert(video.clone()) {
-            let (store, set) = (self.cfg.store.clone(), self.analyzing.clone());
-            info!("analysis started in the background, the lights will follow on the next playback");
-            std::thread::spawn(move || {
-                let opts = analyze::Options { fps: 12.0, cols: 16, rows: 9, hwaccel: analyze::HwAccel::Auto, threads: 2 };
-                match analyze::analyze(&video, &opts) {
-                    Ok((t, _)) => {
-                        if let Err(e) = t.save(&track::track_path(&store, &video)) {
-                            warn!("saving the track: {e:#}");
-                        }
-                    }
-                    Err(e) => warn!("analyzing {}: {e:#}", video.display()),
-                }
-                set.lock().unwrap().remove(&video);
-            });
+        if !video.exists() {
+            warn!("lueur can't see {}: check the Library folders", video.display());
+        } else if self.cfg.auto_analyze && self.queue.push(video) {
+            info!("analysis queued, the lights will follow on the next playback");
         }
         None
     }
 
-    pub async fn run(self) -> Result<()> {
-        let jf = Arc::new(Jellyfin::new(&self.cfg.jellyfin.url, &self.cfg.jellyfin.api_key, self.cfg.jellyfin.device.clone()));
+    /// Runs until `stop` completes, then closes the stream.
+    pub async fn run(self, stop: impl Future<Output = ()>) -> Result<()> {
+        let jf = Arc::new(Jellyfin::new(
+            &self.cfg.jellyfin.url,
+            &self.cfg.jellyfin.api_key,
+            self.cfg.jellyfin.device.clone(),
+        ));
         let (tx, mut rx) = watch::channel::<Option<NowPlaying>>(None);
         let poller = {
             let jf = jf.clone();
+            let live = self.live.clone();
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_millis(500));
                 let mut errors = 0u32;
@@ -174,10 +230,12 @@ impl Player {
                     match jf.now_playing().await {
                         Ok(np) => {
                             errors = 0;
+                            live.status.lock().unwrap().jellyfin_error = None;
                             tx.send_replace(np);
                         }
                         Err(e) => {
                             errors += 1;
+                            live.status.lock().unwrap().jellyfin_error = Some(format!("{e:#}"));
                             if errors == 1 || errors % 20 == 0 {
                                 warn!("{e:#}");
                             }
@@ -202,14 +260,13 @@ impl Player {
         let mut tick = tokio::time::interval(FRAME);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last = Instant::now();
-        let ctrl_c = tokio::signal::ctrl_c();
-        tokio::pin!(ctrl_c);
+        tokio::pin!(stop);
 
         info!("waiting for playback on Jellyfin…");
         loop {
             tokio::select! {
                 _ = tick.tick() => {}
-                _ = &mut ctrl_c => break,
+                _ = &mut stop => break,
             }
             let now = Instant::now();
             let dt = (now - last).as_secs_f32();
@@ -236,6 +293,15 @@ impl Player {
                         paused_since = None;
                     }
                 }
+                let mut st = self.status();
+                st.playing = np.map(|np| Playing {
+                    title: np.name,
+                    device: np.device,
+                    position: np.position,
+                    duration: current.as_ref().and_then(|c| c.1.as_ref()).map(|t| t.duration()),
+                    paused: np.paused,
+                    has_track: current.as_ref().is_some_and(|c| c.1.is_some()),
+                });
             }
 
             let playable = current.as_ref().and_then(|(_, t, m)| t.clone().map(|t| (t, m)));
@@ -245,6 +311,7 @@ impl Player {
                 if now - since >= STOP_AFTER {
                     if let Some(s) = session.take() {
                         self.close(s).await;
+                        self.set_streaming(false, &[]);
                     }
                 }
                 continue;
@@ -267,18 +334,23 @@ impl Player {
 
             let (track, mapping) = playable.unwrap();
             let Some(pos) = clock.now() else { continue };
-            let look = &self.cfg.look;
+            let look = &self.live.look.lock().unwrap().clone();
             track.sample(pos + look.offset_ms / 1000.0, &mut grid);
             mapping.colors(&grid, &mut colors);
             for c in colors.iter_mut() {
                 c.1 = look.apply(c.1);
             }
             smoother.apply(&mut colors, look, dt);
+            self.set_streaming(true, &colors);
+            if let Some(p) = self.status().playing.as_mut() {
+                p.position = pos;
+            }
             if let Err(e) = session.as_mut().unwrap().stream.send(&colors) {
                 warn!("sending to the bridge: {e:#}");
                 if let Some(s) = session.take() {
                     self.close(s).await;
                 }
+                self.set_streaming(false, &[]);
                 retry_at = now + Duration::from_secs(2);
             }
         }
@@ -287,7 +359,17 @@ impl Player {
         if let Some(s) = session.take() {
             self.close(s).await;
         }
+        self.set_streaming(false, &[]);
         Ok(())
+    }
+
+    fn set_streaming(&self, on: bool, colors: &[(u8, Rgb)]) {
+        let mut st = self.status();
+        st.streaming = on;
+        for ch in st.channels.iter_mut() {
+            let c = colors.iter().find(|c| c.0 == ch.id).map(|c| c.1).unwrap_or_default();
+            ch.color = c.map(|v| (linear_to_srgb(v) * 255.0).round() as u8);
+        }
     }
 }
 
@@ -299,9 +381,8 @@ pub async fn test_pattern(cfg: &Config, seconds: f32) -> Result<()> {
     bridge.set_streaming(&area.id, true).await?;
     let addr = format!("{}:{}", cfg.hue.bridge, cfg.hue.dtls_port.unwrap_or(2100));
     let id = area.id.clone();
-    let mut stream = tokio::task::spawn_blocking(move || Stream::connect(&addr, &creds, &id))
-        .await?
-        .context("DTLS connection")?;
+    let mut stream =
+        tokio::task::spawn_blocking(move || Stream::connect(&addr, &creds, &id)).await?.context("DTLS connection")?;
     let start = Instant::now();
     let mut tick = tokio::time::interval(FRAME);
     let n = area.channels.len().max(1) as f32;

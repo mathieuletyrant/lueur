@@ -1,7 +1,8 @@
 //! Tracks what is playing on Jellyfin, and the local playback clock.
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -54,6 +55,13 @@ pub struct NowPlaying {
     pub at: Instant,
 }
 
+#[derive(Debug, Serialize)]
+pub struct JellyfinLibrary {
+    pub name: String,
+    pub kind: String,
+    pub locations: Vec<String>,
+}
+
 pub struct Jellyfin {
     url: String,
     key: String,
@@ -91,7 +99,9 @@ impl Jellyfin {
         let now_wall = unix_now();
         let at = Instant::now();
         for s in sessions {
-            let (Some(item), Some(ps)) = (s.now_playing_item, s.play_state) else { continue };
+            let (Some(item), Some(ps)) = (s.now_playing_item, s.play_state) else {
+                continue;
+            };
             if !matches!(item.kind.as_str(), "Movie" | "Episode" | "Video" | "MusicVideo") {
                 continue;
             }
@@ -126,6 +136,46 @@ impl Jellyfin {
             }));
         }
         Ok(None)
+    }
+
+    /// Server name and version: checks the URL and the key.
+    pub async fn info(&self) -> Result<Value> {
+        Ok(self.get("/System/Info").send().await.context("Jellyfin unreachable")?.error_for_status()?.json().await?)
+    }
+
+    /// Names of the devices seen recently, for the device filter.
+    pub async fn devices(&self) -> Result<Vec<String>> {
+        let sessions: Vec<Session> =
+            self.get("/Sessions?activeWithinSeconds=86400").send().await?.error_for_status()?.json().await?;
+        let mut names: Vec<_> = sessions.into_iter().map(|s| s.device_name).filter(|n| !n.is_empty()).collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
+    /// Video libraries (movies, shows, mixed) and their folders.
+    pub async fn libraries(&self) -> Result<Vec<JellyfinLibrary>> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Folder {
+            name: String,
+            #[serde(default)]
+            collection_type: Option<String>,
+            #[serde(default)]
+            locations: Vec<String>,
+        }
+        let folders: Vec<Folder> = self.get("/Library/VirtualFolders").send().await?.error_for_status()?.json().await?;
+        Ok(folders
+            .into_iter()
+            .filter_map(|f| {
+                let kind = f.collection_type.unwrap_or_else(|| "mixed".into());
+                matches!(kind.as_str(), "movies" | "tvshows" | "mixed").then_some(JellyfinLibrary {
+                    name: f.name,
+                    kind,
+                    locations: f.locations,
+                })
+            })
+            .collect())
     }
 
     /// Some versions do not include the path in the session.

@@ -10,11 +10,15 @@ pub struct Config {
     pub store: PathBuf,
     pub hue: HueConfig,
     pub jellyfin: JellyfinConfig,
-    /// Paths as seen by Jellyfin → paths as seen by lueur.
+    /// Jellyfin libraries lueur follows, with the folder where lueur sees them.
+    pub libraries: Vec<Library>,
+    /// Paths as seen by Jellyfin → paths as seen by lueur (on top of `libraries`).
     pub path_map: Vec<PathMap>,
     pub look: Look,
     /// Automatically analyze a film that is played without a track yet.
     pub auto_analyze: bool,
+    /// Parallel analyses in the background queue (0 = 1).
+    pub jobs: usize,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -40,6 +44,14 @@ pub struct JellyfinConfig {
     pub device: Option<String>,
 }
 
+/// One folder of a Jellyfin library: Jellyfin's path and lueur's path.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Library {
+    pub name: String,
+    pub jellyfin: String,
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PathMap {
     pub from: String,
@@ -48,13 +60,15 @@ pub struct PathMap {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self { store: PathBuf::from("tracks"), ..Default::default() });
-        }
-        let s = std::fs::read_to_string(path)?;
-        let mut c: Config = serde_json::from_str(&s).with_context(|| format!("reading {}", path.display()))?;
+        let mut c = if path.exists() {
+            let s = std::fs::read_to_string(path)?;
+            serde_json::from_str(&s).with_context(|| format!("reading {}", path.display()))?
+        } else {
+            Config::default()
+        };
         if c.store.as_os_str().is_empty() {
-            c.store = PathBuf::from("tracks");
+            // Next to the config file, so a Docker volume holding the config keeps the tracks too.
+            c.store = path.parent().unwrap_or(Path::new("")).join("tracks");
         }
         Ok(c)
     }
@@ -65,9 +79,10 @@ impl Config {
     }
 
     pub fn local_path(&self, jellyfin_path: &str) -> PathBuf {
-        for m in &self.path_map {
-            if let Some(rest) = jellyfin_path.strip_prefix(&m.from) {
-                return PathBuf::from(format!("{}{rest}", m.to));
+        let libs = self.libraries.iter().map(|l| (&l.jellyfin, &l.path));
+        for (from, to) in libs.chain(self.path_map.iter().map(|m| (&m.from, &m.to))) {
+            if let Some(rest) = jellyfin_path.strip_prefix(from.as_str()) {
+                return PathBuf::from(format!("{to}{rest}"));
             }
         }
         PathBuf::from(jellyfin_path)
@@ -84,7 +99,15 @@ mod tests {
             path_map: vec![PathMap { from: "/media/movies".into(), to: "/downloads/movies".into() }],
             ..Default::default()
         };
-        assert_eq!(c.local_path("/media/movies/Dune (2021)/Dune.mkv"), PathBuf::from("/downloads/movies/Dune (2021)/Dune.mkv"));
+        assert_eq!(
+            c.local_path("/media/movies/Dune (2021)/Dune.mkv"),
+            PathBuf::from("/downloads/movies/Dune (2021)/Dune.mkv")
+        );
         assert_eq!(c.local_path("/other/x.mkv"), PathBuf::from("/other/x.mkv"));
+        let c = Config {
+            libraries: vec![Library { name: "Shows".into(), jellyfin: "/media/tv".into(), path: "/data/tv".into() }],
+            ..c
+        };
+        assert_eq!(c.local_path("/media/tv/Lost/s01e01.mkv"), PathBuf::from("/data/tv/Lost/s01e01.mkv"));
     }
 }

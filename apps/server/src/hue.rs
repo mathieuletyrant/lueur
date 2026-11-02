@@ -1,11 +1,12 @@
 //! Philips Hue bridge: REST API v2 (pairing, entertainment areas,
 //! start/stop) and the Entertainment stream over DTLS 1.2 PSK on UDP 2100.
 
-use crate::color::{linear_to_srgb, Rgb};
-use anyhow::{anyhow, bail, Context, Result};
+use crate::color::{Rgb, linear_to_srgb};
+use anyhow::{Context, Result, anyhow, bail};
 use openssl::ssl::{HandshakeError, Ssl, SslContext, SslMethod, SslOptions, SslStream, SslVerifyMode, SslVersion};
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::UdpSocket;
 use std::time::Duration;
@@ -49,25 +50,102 @@ pub async fn pair(host: &str, base: Option<&str>) -> Result<Option<Credentials>>
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// A bridge found on the network.
+#[derive(Debug, Clone, Serialize)]
+pub struct Found {
+    pub ip: String,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub model: Option<String>,
+}
+
+/// Looks for bridges through the Hue cloud (works from inside Docker) and
+/// mDNS (works without internet, needs the host network), in parallel.
+pub async fn discover() -> Vec<Found> {
+    let cloud = async {
+        #[derive(Deserialize)]
+        struct Entry {
+            id: String,
+            internalipaddress: String,
+        }
+        let r: Vec<Entry> = http().get("https://discovery.meethue.com").send().await.ok()?.json().await.ok()?;
+        Some(r.into_iter().map(|e| (e.internalipaddress, Some(e.id))).collect::<Vec<_>>())
+    };
+    let mdns = tokio::task::spawn_blocking(|| mdns(Duration::from_secs(3)));
+    let (cloud, mdns) = tokio::join!(cloud, mdns);
+    let mut by_ip: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for (ip, id) in cloud.unwrap_or_default().into_iter().chain(mdns.unwrap_or_default()) {
+        let e = by_ip.entry(ip).or_default();
+        if e.is_none() {
+            *e = id;
+        }
+    }
+    let infos: Vec<_> = by_ip
+        .into_iter()
+        .map(|(ip, id)| {
+            tokio::spawn(async move {
+                let c = info(&ip).await;
+                Found {
+                    id: c.as_ref().and_then(|c| c["bridgeid"].as_str().map(str::to_lowercase)).or(id),
+                    name: c.as_ref().and_then(|c| c["name"].as_str().map(String::from)),
+                    model: c.as_ref().and_then(|c| c["modelid"].as_str().map(String::from)),
+                    ip,
+                }
+            })
+        })
+        .collect();
+    let mut found = Vec::new();
+    for f in infos {
+        found.extend(f.await.ok());
+    }
+    found
+}
+
+fn mdns(wait: Duration) -> Vec<(String, Option<String>)> {
+    let Ok(d) = mdns_sd::ServiceDaemon::new() else {
+        return vec![];
+    };
+    let Ok(rx) = d.browse("_hue._tcp.local.") else {
+        return vec![];
+    };
+    let end = std::time::Instant::now() + wait;
+    let mut out = Vec::new();
+    while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
+        let Ok(ev) = rx.recv_timeout(left) else { break };
+        if let mdns_sd::ServiceEvent::ServiceResolved(s) = ev {
+            let id = s.get_property_val_str("bridgeid").map(str::to_lowercase);
+            out.extend(s.get_addresses_v4().into_iter().map(|ip| (ip.to_string(), id.clone())));
+        }
+    }
+    d.shutdown().ok();
+    out
+}
+
+/// Public bridge config (name, model, id): answers without credentials.
+pub async fn info(host: &str) -> Option<Value> {
+    let c: Value = http().get(format!("https://{host}/api/0/config")).send().await.ok()?.json().await.ok()?;
+    c.get("bridgeid").is_some().then_some(c)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Position {
     pub x: f32,
     pub y: f32,
     pub z: f32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Channel {
     pub channel_id: u8,
     pub position: Position,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Metadata {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Area {
     pub id: String,
     pub metadata: Metadata,
@@ -88,11 +166,7 @@ pub struct Bridge {
 
 impl Bridge {
     pub fn new(host: &str, creds: Credentials, base: Option<&str>) -> Self {
-        Self {
-            base: base.map(str::to_string).unwrap_or_else(|| format!("https://{host}")),
-            creds,
-            http: http(),
-        }
+        Self { base: base.map(str::to_string).unwrap_or_else(|| format!("https://{host}")), creds, http: http() }
     }
 
     async fn clip(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -134,8 +208,12 @@ impl Bridge {
 
     pub async fn set_streaming(&self, area_id: &str, on: bool) -> Result<()> {
         let action = if on { "start" } else { "stop" };
-        self.clip(reqwest::Method::PUT, &format!("entertainment_configuration/{area_id}"), Some(json!({"action": action})))
-            .await?;
+        self.clip(
+            reqwest::Method::PUT,
+            &format!("entertainment_configuration/{area_id}"),
+            Some(json!({"action": action})),
+        )
+        .await?;
         Ok(())
     }
 

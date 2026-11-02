@@ -4,13 +4,14 @@ mod config;
 mod hue;
 mod jellyfin;
 mod player;
+mod queue;
+mod server;
 mod track;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Syncs Philips Hue lights with the films played on Jellyfin.
@@ -62,68 +63,32 @@ enum Cmd {
     },
     /// Follows Jellyfin and drives the lights.
     Run,
+    /// Like `run`, plus the web UI and its API.
+    Serve {
+        #[arg(long, env = "LUEUR_PORT", default_value_t = 8080)]
+        port: u16,
+    },
 }
 
-const VIDEO_EXT: &[&str] = &["mkv", "mp4", "m4v", "avi", "mov", "ts", "m2ts", "webm"];
-
-fn collect(paths: &[PathBuf], out: &mut Vec<PathBuf>) {
-    for p in paths {
-        if p.is_dir() {
-            let Ok(rd) = std::fs::read_dir(p) else { continue };
-            let mut children: Vec<_> = rd.flatten().map(|e| e.path()).collect();
-            children.sort();
-            collect(&children, out);
-        } else if p
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| VIDEO_EXT.contains(&e.to_ascii_lowercase().as_str()))
-        {
-            out.push(p.clone());
-        }
-    }
+pub fn analyze_options() -> analyze::Options {
+    analyze::Options { fps: 12.0, cols: 16, rows: 9, hwaccel: analyze::HwAccel::Auto, threads: 0, progress: None }
 }
 
 fn cmd_analyze(store: &Path, paths: &[PathBuf], opts: analyze::Options, jobs: usize, force: bool) -> Result<()> {
     let mut files = Vec::new();
-    collect(paths, &mut files);
+    queue::collect(paths, &mut files);
     let todo: Vec<_> = files.into_iter().filter(|f| force || !track::is_fresh(store, f)).collect();
     if todo.is_empty() {
         println!("Nothing to analyze, all tracks are up to date.");
         return Ok(());
     }
-    let total = todo.len();
-    let queue = Arc::new(Mutex::new(todo));
-    let done = Arc::new(AtomicUsize::new(0));
-    let failed = Arc::new(AtomicUsize::new(0));
-    let workers: Vec<_> = (0..jobs.max(1))
-        .map(|_| {
-            let (queue, done, failed, store, opts) = (queue.clone(), done.clone(), failed.clone(), store.to_path_buf(), opts.clone());
-            std::thread::spawn(move || loop {
-                let Some(f) = queue.lock().unwrap().pop() else { break };
-                let name = f.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                match analyze::analyze(&f, &opts).and_then(|(t, s)| t.save(&track::track_path(&store, &f)).map(|_| (t, s))) {
-                    Ok((t, s)) => {
-                        let n = done.fetch_add(1, Ordering::SeqCst) + 1;
-                        let speed = t.duration() / s.elapsed;
-                        println!(
-                            "[{n}/{total}] {name}: {:.0} min of film in {:.1} s ({speed:.0}× real time, {:?})",
-                            t.duration() / 60.0,
-                            s.elapsed,
-                            s.hwaccel
-                        );
-                    }
-                    Err(e) => {
-                        failed.fetch_add(1, Ordering::SeqCst);
-                        eprintln!("failed {name}: {e:#}");
-                    }
-                }
-            })
-        })
-        .collect();
-    for w in workers {
-        w.join().ok();
+    println!("Analyzing {} file(s)…", todo.len());
+    let q = queue::Queue::new(store.to_path_buf(), opts, jobs);
+    for f in todo {
+        q.push(f);
     }
-    let f = failed.load(Ordering::SeqCst);
+    q.wait_idle();
+    let f = q.snapshot().failed.len();
     if f > 0 {
         bail!("{f} analysis(es) failed");
     }
@@ -134,7 +99,14 @@ fn cmd_inspect(path: &Path, at: Option<f64>) -> Result<()> {
     let t = track::Track::load(path)?;
     let size = std::fs::metadata(path)?.len();
     println!("source   : {}", t.source);
-    println!("duration : {:.1} min, {} frames at {} fps, {}×{} grid", t.duration() / 60.0, t.frame_count(), t.fps, t.cols, t.rows);
+    println!(
+        "duration : {:.1} min, {} frames at {} fps, {}×{} grid",
+        t.duration() / 60.0,
+        t.frame_count(),
+        t.fps,
+        t.cols,
+        t.rows
+    );
     println!("file     : {:.1} KB", size as f64 / 1024.0);
     if let Some(at) = at {
         let mut g = Vec::new();
@@ -149,7 +121,8 @@ fn cmd_inspect(path: &Path, at: Option<f64>) -> Result<()> {
                 .collect();
             println!("  {line}\x1b[0m");
         }
-        let mid = g[(t.rows as usize / 2) * t.cols as usize + t.cols as usize / 2].map(|v| (color::linear_to_srgb(v) * 255.0).round() as u8);
+        let mid = g[(t.rows as usize / 2) * t.cols as usize + t.cols as usize / 2]
+            .map(|v| (color::linear_to_srgb(v) * 255.0).round() as u8);
         println!("center   : rgb({}, {}, {})", mid[0], mid[1], mid[2]);
     }
     Ok(())
@@ -165,7 +138,7 @@ async fn main() -> Result<()> {
     let mut cfg = config::Config::load(&cli.config)?;
     match cli.cmd {
         Cmd::Analyze { paths, fps, hwaccel, jobs, force } => {
-            let opts = analyze::Options { fps, cols: 16, rows: 9, hwaccel, threads: 0 };
+            let opts = analyze::Options { fps, hwaccel, ..analyze_options() };
             let store = cfg.store.clone();
             tokio::task::spawn_blocking(move || cmd_analyze(&store, &paths, opts, jobs, force)).await??;
         }
@@ -192,12 +165,23 @@ async fn main() -> Result<()> {
             for a in b.areas().await? {
                 println!("{} — {} ({}, {})", a.metadata.name, a.id, a.configuration_type, a.status);
                 for ch in &a.channels {
-                    println!("   channel {}: x={:+.2} y={:+.2} z={:+.2}", ch.channel_id, ch.position.x, ch.position.y, ch.position.z);
+                    println!(
+                        "   channel {}: x={:+.2} y={:+.2} z={:+.2}",
+                        ch.channel_id, ch.position.x, ch.position.y, ch.position.z
+                    );
                 }
             }
         }
         Cmd::Test { seconds } => player::test_pattern(&cfg, seconds).await?,
-        Cmd::Run => player::Player::new(cfg).await?.run().await?,
+        Cmd::Run => {
+            let live = Arc::new(player::Live { look: cfg.look.clone().into(), ..Default::default() });
+            let q = queue::Queue::new(cfg.store.clone(), analyze_options(), cfg.jobs);
+            let stop = async {
+                tokio::signal::ctrl_c().await.ok();
+            };
+            player::Player::new(cfg, live, q).await?.run(stop).await?
+        }
+        Cmd::Serve { port } => server::serve(cli.config, cfg, port).await?,
     }
     Ok(())
 }

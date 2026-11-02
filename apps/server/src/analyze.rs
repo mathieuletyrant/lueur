@@ -4,10 +4,12 @@
 
 use crate::color::{linear_to_srgb, srgb_to_linear};
 use crate::track::Track;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 pub const SAMPLE_W: usize = 96;
@@ -35,6 +37,8 @@ pub struct Options {
     pub rows: u8,
     pub hwaccel: HwAccel,
     pub threads: u32,
+    /// Incremented for every analyzed frame (progress reporting).
+    pub progress: Option<Arc<AtomicUsize>>,
 }
 
 pub struct Stats {
@@ -60,12 +64,25 @@ pub fn analyze(video: &Path, opts: &Options) -> Result<(Track, Stats)> {
     }
 }
 
+/// Video duration in seconds, from ffprobe.
+pub fn duration(video: &Path) -> Option<f64> {
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
+        .arg(video)
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
 fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel) -> Vec<String> {
     let fps = opts.fps;
     let mut a: Vec<String> = vec!["-hide_banner".into(), "-loglevel".into(), "error".into(), "-nostdin".into()];
     let filter = match hw {
         HwAccel::Vaapi => {
-            a.extend(["-hwaccel", "vaapi", "-hwaccel_device", RENDER_NODE, "-hwaccel_output_format", "vaapi"].map(String::from));
+            a.extend(
+                ["-hwaccel", "vaapi", "-hwaccel_device", RENDER_NODE, "-hwaccel_output_format", "vaapi"]
+                    .map(String::from),
+            );
             format!("fps={fps},scale_vaapi=w={SAMPLE_W}:h={SAMPLE_H}:format=nv12,hwdownload,format=nv12")
         }
         HwAccel::Qsv => {
@@ -123,6 +140,9 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
         }
         let crop = bars.update(&buf);
         grid.compute(&buf, crop, &mut frames);
+        if let Some(p) = &opts.progress {
+            p.fetch_add(1, Ordering::Relaxed);
+        }
     }
     let status = child.wait()?;
     let err = err_reader.join().unwrap_or_default();

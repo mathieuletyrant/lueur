@@ -1,0 +1,210 @@
+//! Background Analysis queue, shared by the CLI, the player and the API.
+//! Each running Analysis gets its own thread; at most `jobs` run at once.
+
+use crate::analyze;
+use crate::track;
+use serde::Serialize;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use tracing::{info, warn};
+
+const VIDEO_EXT: &[&str] = &["mkv", "mp4", "m4v", "avi", "mov", "ts", "m2ts", "webm"];
+const KEEP_FAILED: usize = 50;
+
+/// Video files under `paths` (files or folders, recursively), sorted.
+pub fn collect(paths: &[PathBuf], out: &mut Vec<PathBuf>) {
+    for p in paths {
+        if p.is_dir() {
+            let Ok(rd) = std::fs::read_dir(p) else {
+                continue;
+            };
+            let mut children: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+            children.sort();
+            collect(&children, out);
+        } else if p
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| VIDEO_EXT.contains(&e.to_ascii_lowercase().as_str()))
+        {
+            out.push(p.clone());
+        }
+    }
+}
+
+struct Job {
+    video: PathBuf,
+    /// Seconds of video, when ffprobe knows it (probed by the job's thread).
+    duration: OnceLock<Option<f64>>,
+    frames: Arc<AtomicUsize>,
+}
+
+#[derive(Default)]
+struct State {
+    pending: VecDeque<PathBuf>,
+    running: Vec<Arc<Job>>,
+    done: usize,
+    failed: VecDeque<Failed>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct Failed {
+    pub name: String,
+    pub error: String,
+}
+
+#[derive(Serialize)]
+pub struct Running {
+    pub name: String,
+    /// 0..1, absent when the duration is unknown.
+    pub progress: Option<f64>,
+}
+
+#[derive(Serialize)]
+pub struct Snapshot {
+    pub jobs: usize,
+    pub running: Vec<Running>,
+    pub pending: usize,
+    pub next: Vec<String>,
+    pub done: usize,
+    pub failed: Vec<Failed>,
+}
+
+pub struct Queue {
+    store: PathBuf,
+    opts: analyze::Options,
+    jobs: AtomicUsize,
+    state: Mutex<State>,
+    idle: Condvar,
+}
+
+fn name(p: &Path) -> String {
+    p.file_name().unwrap_or_default().to_string_lossy().into_owned()
+}
+
+impl Queue {
+    pub fn new(store: PathBuf, opts: analyze::Options, jobs: usize) -> Arc<Self> {
+        Arc::new(Self {
+            store,
+            opts,
+            jobs: AtomicUsize::new(jobs.max(1)),
+            state: Default::default(),
+            idle: Condvar::new(),
+        })
+    }
+
+    pub fn set_jobs(self: &Arc<Self>, jobs: usize) {
+        self.jobs.store(jobs.max(1), Ordering::SeqCst);
+        self.pump(&mut self.state.lock().unwrap());
+    }
+
+    /// Queues a video unless it is already queued or running. Returns whether it was added.
+    pub fn push(self: &Arc<Self>, video: PathBuf) -> bool {
+        let mut s = self.state.lock().unwrap();
+        if s.pending.contains(&video) || s.running.iter().any(|j| j.video == video) {
+            return false;
+        }
+        s.pending.push_back(video);
+        self.pump(&mut s);
+        true
+    }
+
+    fn pump(self: &Arc<Self>, s: &mut State) {
+        while s.running.len() < self.jobs.load(Ordering::SeqCst) {
+            let Some(video) = s.pending.pop_front() else {
+                break;
+            };
+            let job = Arc::new(Job { video, duration: OnceLock::new(), frames: Default::default() });
+            s.running.push(job.clone());
+            let q = self.clone();
+            std::thread::spawn(move || q.work(job));
+        }
+    }
+
+    fn work(self: Arc<Self>, job: Arc<Job>) {
+        job.duration.get_or_init(|| analyze::duration(&job.video));
+        let opts = analyze::Options { progress: Some(job.frames.clone()), ..self.opts.clone() };
+        let n = name(&job.video);
+        let res = analyze::analyze(&job.video, &opts)
+            .and_then(|(t, s)| t.save(&track::track_path(&self.store, &job.video)).map(|_| (t, s)));
+        let mut s = self.state.lock().unwrap();
+        s.running.retain(|j| !Arc::ptr_eq(j, &job));
+        match res {
+            Ok((t, st)) => {
+                s.done += 1;
+                info!(
+                    "analyzed {n}: {:.0} min of film in {:.1} s ({:.0}× real time, {:?})",
+                    t.duration() / 60.0,
+                    st.elapsed,
+                    t.duration() / st.elapsed,
+                    st.hwaccel
+                );
+            }
+            Err(e) => {
+                warn!("analysis failed for {n}: {e:#}");
+                s.failed.push_front(Failed { name: n, error: format!("{e:#}") });
+                s.failed.truncate(KEEP_FAILED);
+            }
+        }
+        self.pump(&mut s);
+        if s.running.is_empty() {
+            self.idle.notify_all();
+        }
+    }
+
+    /// Blocks until nothing is queued or running.
+    pub fn wait_idle(&self) {
+        let s = self.state.lock().unwrap();
+        drop(self.idle.wait_while(s, |s| !s.running.is_empty() || !s.pending.is_empty()).unwrap());
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        let s = self.state.lock().unwrap();
+        Snapshot {
+            jobs: self.jobs.load(Ordering::SeqCst),
+            running: s
+                .running
+                .iter()
+                .map(|j| Running {
+                    name: name(&j.video),
+                    progress: j
+                        .duration
+                        .get()
+                        .copied()
+                        .flatten()
+                        .filter(|d| *d > 0.0)
+                        .map(|d| (j.frames.load(Ordering::Relaxed) as f64 / self.opts.fps as f64 / d).min(1.0)),
+                })
+                .collect(),
+            pending: s.pending.len(),
+            next: s.pending.iter().take(5).map(|p| name(p)).collect(),
+            done: s.done,
+            failed: s.failed.iter().cloned().collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_fails_and_queue_goes_idle() {
+        let dir = std::env::temp_dir().join(format!("lueur-queue-{}", std::process::id()));
+        let opts = analyze::Options {
+            fps: 12.0,
+            cols: 16,
+            rows: 9,
+            hwaccel: analyze::HwAccel::None,
+            threads: 0,
+            progress: None,
+        };
+        let q = Queue::new(dir, opts, 1);
+        assert!(q.push("/nope/a.mkv".into()));
+        q.push("/nope/b.mkv".into());
+        q.wait_idle();
+        let s = q.snapshot();
+        assert_eq!((s.done, s.failed.len(), s.pending), (0, 2, 0));
+    }
+}
