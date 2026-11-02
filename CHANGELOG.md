@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/mathieuletyrant/lueur/compare/v0.7.0...v0.8.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **jellyfin:** follow playback through Jellyfin's WebSocket ([5f9b3d9](https://github.com/mathieuletyrant/lueur/commit/5f9b3d941eacca143ac4b1ff10dc792ab5ee0302))
+* skip trailers, samples and extras with editable keywords ([c040a69](https://github.com/mathieuletyrant/lueur/commit/c040a69c5f2e40e2cb5a395f12e9d05c8a3585d5))
+
 ## [0.7.0](https://github.com/mathieuletyrant/lueur/compare/v0.6.0...v0.7.0) (2026-11-02)
 
 
