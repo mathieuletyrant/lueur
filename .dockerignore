@@ -1,0 +1,6 @@
+target
+**/node_modules
+apps/web/dist
+*.lueur
+lueur.json
+.git
