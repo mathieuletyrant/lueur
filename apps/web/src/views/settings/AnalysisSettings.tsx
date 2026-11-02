@@ -1,7 +1,8 @@
-import { useState, type ReactNode } from "react";
-import type { Config } from "../api";
-import { useApp } from "../App";
-import { Button, Card, CardHeader, Input, Segmented, Select, SwitchRow } from "../ui";
+import { type ReactNode, useState } from "react";
+import { type Config } from "../../api";
+import { useApp } from "../../context";
+import { ago, hh, toLocal, toUtc } from "../../lib/hours";
+import { Button, Card, CardHeader, Input, Segmented, Select, SwitchRow } from "../../ui";
 
 const INTERVALS = [
   { value: 0, label: "Off" },
@@ -17,19 +18,6 @@ export const SPEEDS = [
   { value: 25, label: "Fast", hint: "25× real time: a 2-hour film in about 5 min. The server warms up." },
   { value: 0, label: "Hurt my GPU", hint: "As fast as the GPU goes. Great for a first run at night, hot otherwise." },
 ];
-
-// The server keeps the window in UTC minutes; the page shows local hours.
-const offset = new Date().getTimezoneOffset();
-const toUtc = (localHour: number) => (((localHour * 60 + offset) % 1440) + 1440) % 1440;
-export const toLocal = (utcMin: number) => Math.floor(((((utcMin - offset) % 1440) + 1440) % 1440) / 60);
-export const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
-
-const ago = (unix: number) => {
-  const s = Math.max(0, Date.now() / 1000 - unix);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  return `${Math.floor(s / 3600)} h ago`;
-};
 
 /** One line for the Library page: how lueur analyzes right now. */
 export function analysisSummary(cfg: Config) {
@@ -146,7 +134,7 @@ function AnalysisHours() {
 }
 
 /** Keywords that keep files (trailers, samples, extras…) out of every analysis. */
-function Exclude() {
+export function Exclude() {
   const { cfg, patch } = useApp();
   const [draft, setDraft] = useState("");
   const save = (exclude: string[]) => patch({ exclude });

@@ -119,8 +119,10 @@ apps/server      Rust · tokio · axum · OpenSSL (DTLS) · ffmpeg
   src/queue      background analysis queue
   src/server     `lueur serve`: HTTP API + embedded UI
 apps/web         React 19 · Vite · Tailwind 4 · TypeScript
-  src/views      one file per screen (Now, Library, Look, Setup)
-  src/components area view, folder picker
+  src/views      one folder per screen (now, library, look, settings), one file per card or step
+  src/components area view, barcode, folder picker, layout (top bar, status pill, bottom tabs)
+  src/ui         building blocks: buttons, cards, form controls, feedback
+  src/lib        pure helpers: the Look preview maths, analysis hours
 ```
 
 The CLI stays for scripts and debugging: `lueur analyze <dirs> -j 2`, `lueur pair <ip>`, `lueur areas`, `lueur test`, `lueur run` (player only), `lueur inspect track.lueur --at 754`.

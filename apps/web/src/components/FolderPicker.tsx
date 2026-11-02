@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
 import { ChevronRight, CornerLeftUp, Folder, HardDrive, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { api, type Dir } from "../api";
 import { Alert, Button } from "../ui";
 

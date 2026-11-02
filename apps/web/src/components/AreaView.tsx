@@ -1,4 +1,4 @@
-import { useApp } from "../App";
+import { useApp } from "../context";
 import { rgb } from "../ui";
 
 /** Same stretch as the player (Look → Fit to area): the area's extent maps to 0..1. */
