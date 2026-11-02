@@ -20,8 +20,16 @@ export function AnalysisQueue({ onSettings }: { onSettings: () => void }) {
             : `${q.running.length} running · ${q.pending} waiting · ${q.done} done`)
         }
         action={
-          <Button variant="ghost" className="h-8 px-2.5 text-xs" onClick={onSettings} icon={<Settings2 className="size-3.5" />}>
-            {analysisSummary(cfg)}
+          <Button
+            variant="ghost"
+            className="h-8 px-2.5 text-xs"
+            onClick={onSettings}
+            icon={<Settings2 className="size-3.5" />}
+            title={analysisSummary(cfg)}
+            aria-label={`Analysis settings: ${analysisSummary(cfg)}`}
+          >
+            {/* Phones: just the icon, the queue's own line needs the room. */}
+            <span className="hidden sm:inline">{analysisSummary(cfg)}</span>
           </Button>
         }
       />

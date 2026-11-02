@@ -1,4 +1,4 @@
-import { Film, Loader2, RotateCcw, Search } from "lucide-react";
+import { CheckCircle2, Film, Loader2, RotateCcw, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, useLoad, type Video } from "../../api";
 import { Barcode } from "../../components/Barcode";
@@ -70,9 +70,9 @@ export function MediaList() {
           {list.slice(0, shown).map((v) => {
             const running = q?.running.find((r) => v.state === "running" && v.path.endsWith(r.name));
             return (
-              <li key={v.path} className="flex items-center gap-4 py-3">
+              <li key={v.path} className="flex items-center gap-3 py-3 sm:gap-4">
                 {/* A still from the film (15 % in); a plain slate until it is analyzed. */}
-                <div className="grid aspect-video w-24 shrink-0 place-items-center overflow-hidden rounded-md bg-zinc-900 ring-1 ring-white/10 sm:w-32">
+                <div className="grid aspect-video w-20 shrink-0 place-items-center overflow-hidden rounded-md bg-zinc-900 ring-1 ring-white/10 sm:w-32">
                   {v.duration != null ? (
                     <img
                       src={api.frameUrl(v.path, v.duration * 0.15, 320)}
@@ -85,7 +85,9 @@ export function MediaList() {
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm text-zinc-100">{v.name}</p>
+                  <p className="line-clamp-2 text-sm leading-snug break-words text-zinc-100 sm:truncate" title={v.name}>
+                    {v.name}
+                  </p>
                   <p className="truncate text-xs text-zinc-500">
                     {v.library}
                     {v.folder && ` · ${v.folder}`}
@@ -93,21 +95,27 @@ export function MediaList() {
                   {v.duration != null && <Barcode path={v.path} duration={v.duration} className="mt-1.5 max-w-md" />}
                 </div>
                 {v.state === "running" ? (
-                  <span className="flex w-28 items-center gap-2">
+                  <span className="flex w-16 shrink-0 items-center gap-2 sm:w-28">
                     <Progress value={running?.progress ?? null} className="flex-1" />
                     {running?.progress != null && <span className="text-xs text-zinc-500 tabular-nums">{Math.round(running.progress * 100)}%</span>}
                   </span>
                 ) : v.state === "queued" ? (
-                  <Pill tone="blue">Queued</Pill>
+                  <span className="shrink-0">
+                    <Pill tone="blue">Queued</Pill>
+                  </span>
                 ) : v.analyzed ? (
-                  <>
-                    <Pill tone="green">Analyzed</Pill>
+                  <span className="flex shrink-0 items-center gap-1">
+                    {/* Phones: a check instead of the pill, so the title gets the room. */}
+                    <span className="hidden sm:inline-flex">
+                      <Pill tone="green">Analyzed</Pill>
+                    </span>
+                    <CheckCircle2 className="size-4 text-emerald-400 sm:hidden" aria-label="Analyzed" />
                     <Button variant="ghost" className="h-7 px-2" onClick={() => analyze(v)} aria-label={`Analyze ${v.name} again`} title="Analyze again">
                       <RotateCcw className="size-3.5" />
                     </Button>
-                  </>
+                  </span>
                 ) : (
-                  <Button className="h-7 px-2.5 text-xs" onClick={() => analyze(v)}>
+                  <Button className="h-7 shrink-0 px-2.5 text-xs" onClick={() => analyze(v)}>
                     Analyze
                   </Button>
                 )}
