@@ -1,9 +1,17 @@
+import { useApp } from "../App";
 import { rgb } from "../ui";
+
+/** Same stretch as the player (Look → Fit to area): the area's extent maps to 0..1. */
+function fitter(vals: number[], on: boolean) {
+  const lo = Math.min(...vals);
+  const hi = Math.max(...vals);
+  return (v: number) => (on && hi - lo > 0.2 ? (v - lo) / (hi - lo) : (v + 1) / 2);
+}
 
 type Ch = { id: number; x: number; z: number; color?: [number, number, number] };
 
-/** The Area seen from the couch: the TV in the middle, each Channel at its
- *  Hue position (x = left/right, z = floor/ceiling), glowing with its color. */
+/** The Area seen from the couch: the TV in the middle, each Channel where
+ *  lueur reads the screen for it (x = left/right, z = floor/ceiling), glowing with its color. */
 export function AreaView({
   channels,
   compact,
@@ -17,6 +25,9 @@ export function AreaView({
   /** Makes each light clickable (to blink it). */
   onChannel?: (id: number) => void;
 }) {
+  const { cfg } = useApp();
+  const fx = fitter(channels.map((c) => c.x), cfg.look.fit_area);
+  const fz = fitter(channels.map((c) => c.z), cfg.look.fit_area);
   return (
     <div className={compact ? "relative aspect-[16/7]" : "relative aspect-[16/8]"}>
       <div className="absolute inset-[22%_26%] rounded-md border border-white/15 bg-gradient-to-b from-zinc-800/60 to-zinc-900/80 shadow-[0_20px_40px_-20px_rgb(0_0_0/0.8)]">
@@ -25,8 +36,8 @@ export function AreaView({
       </div>
       {channels.map((c) => {
         const lit = c.color && c.color.some((v) => v > 4);
-        const left = `${((c.x + 1) / 2) * 84 + 8}%`;
-        const top = `${((1 - c.z) / 2) * 76 + 12}%`;
+        const left = `${fx(c.x) * 76 + 12}%`;
+        const top = `${(1 - fz(c.z)) * 72 + 14}%`;
         return (
           <div key={c.id} className="absolute -translate-x-1/2 -translate-y-1/2" style={{ left, top }}>
             {lit && (
