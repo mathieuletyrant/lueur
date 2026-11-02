@@ -101,7 +101,9 @@ impl Track {
             .step_by(6)
             .map(|i| {
                 self.frame(i)
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|c| luminance([srgb_to_linear(c[0]), srgb_to_linear(c[1]), srgb_to_linear(c[2])]))
                     .fold(0.0, f32::max)
             })
@@ -124,7 +126,7 @@ impl Track {
                 let mut acc = [0f32; 3];
                 let mut count = 0f32;
                 for f in (a..b).step_by(((b - a) / 8).max(1)) {
-                    for c in self.frame(f).chunks_exact(3) {
+                    for c in self.frame(f).as_chunks::<3>().0 {
                         for ch in 0..3 {
                             acc[ch] += srgb_to_linear(c[ch]);
                         }

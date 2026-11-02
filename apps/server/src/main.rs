@@ -5,6 +5,7 @@ mod hue;
 mod jellyfin;
 mod player;
 mod queue;
+mod render;
 mod server;
 mod track;
 

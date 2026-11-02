@@ -6,6 +6,7 @@ use crate::hue::{self, Bridge};
 use crate::jellyfin::Jellyfin;
 use crate::player::{self, Live, Player, Status};
 use crate::queue::{self, Queue};
+use crate::render::Renderer;
 use crate::track;
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, Uri, header};
@@ -34,7 +35,7 @@ struct App {
     /// A still frame is being streamed.
     holding: AtomicBool,
     /// Barcodes by track file, with the track's modification time.
-    barcodes: Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, Arc<Vec<String>>)>>,
+    barcodes: Mutex<std::collections::HashMap<PathBuf, Barcode>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -45,6 +46,9 @@ struct LastScan {
     #[serde(flatten)]
     result: queue::ScanResult,
 }
+
+/// A film's barcode, with the modification time of the track it came from.
+type Barcode = (std::time::SystemTime, Arc<Vec<String>>);
 
 struct ApiError(StatusCode, String);
 
@@ -558,8 +562,10 @@ async fn put_hold(State(app): State<Arc<App>>, Json(h): Json<Hold>) -> Res {
     tokio::spawn(async move {
         let cfg = app.config();
         let mut cache: Option<(PathBuf, track::Track)> = None;
+        let mut renderer: Option<Renderer> = None;
+        let mut last = 0.0;
         let stop = || app.hold.lock().unwrap().is_none() || app.film_playing();
-        let res = player::stream_for(&cfg, 600.0, stop, |area, _| {
+        let res = player::stream_for(&cfg, 600.0, stop, |area, now| {
             let Some(h) = app.hold.lock().unwrap().clone() else { return vec![] };
             if cache.as_ref().is_none_or(|c| c.0 != h.path) {
                 match track::Track::load(&track::track_path(&cfg.store, &h.path)) {
@@ -568,7 +574,10 @@ async fn put_hold(State(app): State<Arc<App>>, Json(h): Json<Hold>) -> Res {
                 }
             }
             let look = app.live.look.lock().unwrap().clone();
-            let colors = player::still_colors(area, &cache.as_ref().unwrap().1, h.t, &look);
+            // Same rendering as a film: moving the slider fades like a cut does.
+            let r = renderer.get_or_insert_with(|| Renderer::new(&area.channels));
+            let colors = r.colors(&cache.as_ref().unwrap().1, h.t, &look, now - last).to_vec();
+            last = now;
             app.live.set_streaming(true, &colors);
             colors
         })

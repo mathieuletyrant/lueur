@@ -3,9 +3,10 @@
 
 use crate::color::{Look, Rgb, linear_to_srgb};
 use crate::config::Config;
-use crate::hue::{Area, Bridge, Channel, Stream};
+use crate::hue::{Area, Bridge, Stream};
 use crate::jellyfin::{Clock, ClockEvent, Jellyfin, NowPlaying};
 use crate::queue::Queue;
+use crate::render::Renderer;
 use crate::track::{self, Track};
 use anyhow::Result;
 use serde::Serialize;
@@ -19,95 +20,6 @@ const FRAME: Duration = Duration::from_millis(20);
 const STOP_AFTER: Duration = Duration::from_millis(1500);
 const PAUSE_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_TRACK: Duration = Duration::from_secs(5);
-
-/// For each Hue channel, the grid cells that light it and their weights.
-pub struct Mapping {
-    channels: Vec<(u8, Vec<(usize, f32)>)>,
-    /// The Look settings it was built with (spread, fit_area).
-    made_for: (f32, bool),
-}
-
-impl Mapping {
-    /// Hue position: x from -1 (left) to 1 (right), z from -1 (floor) to 1 (ceiling).
-    /// Positions are stretched to the area's extent: lights (or the segments
-    /// of a gradient strip) grouped around the TV still reach the screen's
-    /// edges. Each channel takes a Gaussian average of the screen near its edge.
-    pub fn new(channels: &[Channel], cols: u8, rows: u8, look: &Look) -> Self {
-        let (cols, rows) = (cols as usize, rows as usize);
-        let (spread, fit_area) = (look.spread.clamp(0.2, 5.0), look.fit_area);
-        let fit = |vals: Vec<f32>| {
-            let (lo, hi) = vals.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
-            // All on one line (a single row of lights): keep Hue's own scale.
-            move |v: f32| {
-                if fit_area && hi - lo > 0.2 { (v - lo) / (hi - lo) } else { ((v + 1.0) / 2.0).clamp(0.0, 1.0) }
-            }
-        };
-        let fx = fit(channels.iter().map(|c| c.position.x).collect());
-        let fz = fit(channels.iter().map(|c| c.position.z).collect());
-        let channels = channels
-            .iter()
-            .map(|ch| {
-                let u = fx(ch.position.x);
-                let v = 1.0 - fz(ch.position.z);
-                let mut w = Vec::new();
-                let mut total = 0.0;
-                for r in 0..rows {
-                    for c in 0..cols {
-                        let cu = (c as f32 + 0.5) / cols as f32;
-                        let cv = (r as f32 + 0.5) / rows as f32;
-                        let d = ((cu - u) / (0.15 * spread)).powi(2) + ((cv - v) / (0.18 * spread)).powi(2);
-                        let k = (-0.5 * d).exp();
-                        if k > 0.01 {
-                            w.push((r * cols + c, k));
-                            total += k;
-                        }
-                    }
-                }
-                w.iter_mut().for_each(|(_, k)| *k /= total);
-                (ch.channel_id, w)
-            })
-            .collect();
-        Self { channels, made_for: (look.spread, look.fit_area) }
-    }
-
-    fn made_for(&self, look: &Look) -> bool {
-        self.made_for == (look.spread, look.fit_area)
-    }
-
-    pub fn colors(&self, grid: &[Rgb], out: &mut Vec<(u8, Rgb)>) {
-        out.clear();
-        for (id, weights) in &self.channels {
-            let mut c = [0f32; 3];
-            for (i, k) in weights {
-                for ch in 0..3 {
-                    c[ch] += grid[*i][ch] * k;
-                }
-            }
-            out.push((*id, c));
-        }
-    }
-}
-
-/// Per-channel exponential smoothing (the bridge smooths too, but at 25 Hz).
-struct Smoother {
-    state: Vec<Rgb>,
-}
-
-impl Smoother {
-    fn apply(&mut self, colors: &mut [(u8, Rgb)], look: &Look, dt: f32) {
-        if self.state.len() != colors.len() || look.smoothing_ms <= 0.0 {
-            self.state = colors.iter().map(|c| c.1).collect();
-            return;
-        }
-        let a = 1.0 - (-dt * 1000.0 / look.smoothing_ms).exp();
-        for (s, (_, c)) in self.state.iter_mut().zip(colors.iter_mut()) {
-            for ch in 0..3 {
-                s[ch] += (c[ch] - s[ch]) * a;
-            }
-            *c = *s;
-        }
-    }
-}
 
 struct Session {
     stream: Stream,
@@ -300,15 +212,13 @@ impl Player {
         };
 
         let mut clock = Clock::new(self.cfg.sync.jump_ms / 1000.0, self.cfg.sync.drift_ms / 1000.0);
-        let mut current: Option<(String, Option<Arc<Track>>, Option<Mapping>)> = None;
+        let mut current: Option<(String, Option<Arc<Track>>)> = None;
         let mut session: Option<Session> = None;
         let mut retry_at = Instant::now();
         let mut idle_since: Option<Instant> = None;
         let mut paused_since: Option<Instant> = None;
         let mut retry_track_at = Instant::now();
-        let mut grid = Vec::new();
-        let mut colors = Vec::new();
-        let mut smoother = Smoother { state: Vec::new() };
+        let mut renderer = Renderer::new(&self.area.channels);
         let mut tick = tokio::time::interval(FRAME);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last = Instant::now();
@@ -330,7 +240,7 @@ impl Player {
                     Some(np) => {
                         if current.as_ref().map(|c| &c.0) != Some(&np.item_id) {
                             info!("playing: \"{}\" on {}", np.name, np.device);
-                            current = Some((np.item_id.clone(), self.load_track(np), None));
+                            current = Some((np.item_id.clone(), self.load_track(np)));
                         }
                         if let ClockEvent::Jump = clock.update(np) {
                             tracing::debug!("clock re-synced to {:.2} s", np.position);
@@ -363,7 +273,6 @@ impl Player {
                 retry_track_at = now + RETRY_TRACK;
                 let np = rx.borrow().clone().filter(|np| np.item_id == c.0);
                 if let Some(t) = np.and_then(|np| self.find_track(&np)) {
-                    c.2 = None;
                     if let Some(p) = self.status().playing.as_mut() {
                         p.has_track = true;
                         p.duration = Some(t.duration());
@@ -372,15 +281,7 @@ impl Player {
                 }
             }
 
-            // Built once a Track is there, rebuilt when the Look's spread or fit_area change.
-            let look = self.live.look.lock().unwrap().clone();
-            if let Some((_, Some(t), m)) = current.as_mut()
-                && !m.as_ref().is_some_and(|m| m.made_for(&look))
-            {
-                *m = Some(Mapping::new(&self.area.channels, t.cols, t.rows, &look));
-            }
-
-            let playable = current.as_ref().and_then(|(_, t, m)| Some((t.clone()?, m.as_ref()?)));
+            let playable = current.as_ref().and_then(|(_, t)| t.clone());
             let want = playable.is_some() && paused_since.is_none_or(|p| now - p < PAUSE_TIMEOUT);
             if !want {
                 let since = *idle_since.get_or_insert(now);
@@ -408,28 +309,16 @@ impl Player {
                 }
             }
 
-            let (track, mapping) = playable.unwrap();
+            let track = playable.unwrap();
             let Some(pos) = clock.now() else { continue };
-            let look = &look.with_exposure(track.exposure);
-            let t = pos + look.offset_ms / 1000.0;
-            if look.centered_smoothing {
-                track.sample_centered(t, look.smoothing_ms as f64 / 1000.0, &mut grid);
-            } else {
-                track.sample(t, &mut grid);
-            }
-            mapping.colors(&grid, &mut colors);
-            for c in colors.iter_mut() {
-                c.1 = look.apply(c.1);
-            }
-            if !look.centered_smoothing {
-                smoother.apply(&mut colors, look, dt);
-            }
-            self.set_streaming(true, &colors);
+            let look = self.live.look.lock().unwrap().clone();
+            let colors = renderer.colors(&track, pos + look.offset_ms / 1000.0, &look, dt);
+            self.set_streaming(true, colors);
             if let Some(p) = self.status().playing.as_mut() {
                 p.position = pos;
                 p.exposure = look.auto_exposure.then_some(track.exposure);
             }
-            if let Err(e) = session.as_mut().unwrap().stream.send(&colors) {
+            if let Err(e) = session.as_mut().unwrap().stream.send(colors) {
                 warn!("sending to the bridge: {e:#}");
                 if let Some(s) = session.take() {
                     self.close(s).await;
@@ -501,17 +390,6 @@ pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Resul
     .await
 }
 
-/// The colors the area shows for a Track at `t` seconds, with `look` applied.
-pub fn still_colors(area: &Area, track: &Track, t: f64, look: &Look) -> Vec<(u8, Rgb)> {
-    let look = &look.with_exposure(track.exposure);
-    let mut grid = Vec::new();
-    let mut colors = Vec::new();
-    track.sample_centered(t, if look.centered_smoothing { look.smoothing_ms as f64 / 1000.0 } else { 0.0 }, &mut grid);
-    Mapping::new(&area.channels, track.cols, track.rows, look).colors(&grid, &mut colors);
-    colors.iter_mut().for_each(|c| c.1 = look.apply(c.1));
-    colors
-}
-
 fn hue_to_rgb(h: f32) -> Rgb {
     let h = h.rem_euclid(1.0) * 6.0;
     let x = 1.0 - (h % 2.0 - 1.0).abs();
@@ -525,55 +403,4 @@ fn hue_to_rgb(h: f32) -> Rgb {
     };
     // sRGB → linear values, to stay consistent with the rest of the pipeline.
     [r, g, b].map(|v: f32| v.powf(2.2))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::hue::Position;
-
-    #[test]
-    fn strip_segments_around_the_tv_see_their_own_edge() {
-        // A gradient strip's segments, as the Hue app places them: close to the center.
-        let ch = |id, x, z| Channel { channel_id: id, position: Position { x, y: 0.0, z } };
-        let m = Mapping::new(
-            &[ch(0, -0.37, -0.47), ch(1, -0.37, -0.1), ch(2, -0.37, 0.27), ch(3, 0.0, 0.27), ch(6, 0.37, -0.47)],
-            16,
-            9,
-            &Look::default(),
-        );
-        // Screen: top third red, the rest blue on the left half and green on the right half.
-        let grid: Vec<Rgb> = (0..16 * 9)
-            .map(|i| match (i / 16, i % 16) {
-                (0..3, _) => [1.0, 0.0, 0.0],
-                (_, 0..8) => [0.0, 0.0, 1.0],
-                _ => [0.0, 1.0, 0.0],
-            })
-            .collect();
-        let mut out = Vec::new();
-        m.colors(&grid, &mut out);
-        let c = |id: u8| out.iter().find(|c| c.0 == id).unwrap().1;
-        assert!(c(0)[2] > 0.9, "bottom left is blue: {:?}", c(0));
-        assert!(c(2)[0] > 0.6, "top left is mostly red: {:?}", c(2));
-        assert!(c(3)[0] > 0.8, "top center is red: {:?}", c(3));
-        assert!(c(6)[1] > 0.9, "bottom right is green: {:?}", c(6));
-
-        // Without fit_area, the same segments read close to the center: much less contrast.
-        let look = Look { fit_area: false, ..Look::default() };
-        let m = Mapping::new(&[ch(0, -0.37, -0.47)], 16, 9, &look);
-        m.colors(&grid, &mut out);
-        assert!(out[0].1[2] < 0.9, "{:?}", out[0]);
-    }
-
-    #[test]
-    fn left_light_sees_left_of_screen() {
-        let ch = |id, x| Channel { channel_id: id, position: Position { x, y: 0.8, z: 0.0 } };
-        let m = Mapping::new(&[ch(0, -1.0), ch(1, 1.0)], 16, 9, &Look::default());
-        // Grid: left half red, right half blue.
-        let grid: Vec<Rgb> = (0..16 * 9).map(|i| if i % 16 < 8 { [1.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] }).collect();
-        let mut out = Vec::new();
-        m.colors(&grid, &mut out);
-        assert!(out[0].1[0] > 0.95 && out[0].1[2] < 0.05, "{:?}", out[0]);
-        assert!(out[1].1[2] > 0.95 && out[1].1[0] < 0.05, "{:?}", out[1]);
-    }
 }
