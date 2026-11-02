@@ -1,40 +1,99 @@
+<div align="center">
+
+<img src="apps/web/public/icon.svg" width="96" alt="lueur" />
+
 # lueur
 
-Syncs Philips Hue lights with the films played on Jellyfin, from a Linux server (Umbrel), with no Windows PC, no Hue Sync app and no Sync Box.
+**Philips Hue ambilight for Jellyfin, from your home server.**
+No Sync Box, no PC, no Hue Sync app: each film is analyzed once, then your lights follow the screen.
 
-## How it works
+[![Image](https://img.shields.io/badge/ghcr.io-mathieuletyrant%2Flueur-ff8a6b?logo=docker&logoColor=white)](https://github.com/mathieuletyrant/lueur/pkgs/container/lueur)
+![Rust](https://img.shields.io/badge/Rust-2024-dea584?logo=rust&logoColor=black)
+![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=black)
+![Umbrel](https://img.shields.io/badge/Umbrel-community%20app-5351fb)
 
-1. **Analysis, once per film**: ffmpeg decodes the video (VA-API/Quick Sync on an Intel N100, VideoToolbox on macOS) and shrinks it to 96×54 on the GPU. lueur skips black bars and stores a 16×9 color grid, 12 times per second, in a compressed `.lueur` file (a few hundred KB for a 2-hour film).
-2. **Playback**: lueur polls Jellyfin every 500 ms, extrapolates the position between two reports and keeps a locked local clock (re-synced only on a seek, a pause or a media change; small drifts are corrected gently).
-3. **Lights**: each channel of the entertainment area takes the color of the part of the screen matching its position, streamed at 50 Hz through the Hue Entertainment API (DTLS 1.2 PSK, UDP 2100). When playback stops, the stream is closed and the lights return to their previous state.
+<img src="docs/screenshots/now.jpg" alt="Now playing: the film, and each light of the entertainment area with its live color" />
 
-During the film the load is close to zero: no decoding, just a lookup in the track.
+</div>
 
-## Repository
+## ✨ Features
 
-```
-apps/server/   Rust: analysis, player, Hue/Jellyfin clients, HTTP API (`lueur serve`)
-apps/web/      React + Vite + TypeScript UI, embedded in the binary at build time
-docs/adr/      Architecture decisions
-GLOSSARY.md    Domain vocabulary (Bridge, Area, Library, Scan, Track…)
-```
+**Sync**
 
-## Docker (Umbrel)
+- 🎬 **Any Jellyfin client**: Apple TV, TV, phone, browser. lueur follows playback, seeks and pauses
+- 🌈 **Per-light colors**: each light of the Hue entertainment area takes the color of its side of the screen, 50 times per second
+- 🎞️ **Black bars ignored**: letterbox and pillarbox are cropped before the colors are computed
+- ⏱️ **Locked clock**: Jellyfin's position is extrapolated and smoothed, the lights don't stutter between reports
+- 💤 **Lights come back**: when playback stops, the lights return to their previous state
+
+**Analyze**
+
+- ⚡ **Once per film**: ffmpeg decodes on the GPU (VA-API on Intel, VideoToolbox on macOS) and only keeps a tiny image per frame, many times faster than real time
+- 📦 **Tiny tracks**: a 16×9 color grid 12 times per second, a few hundred KB per film
+- 🔍 **Scan** your libraries, or analyze a single film or episode from the list, stop at any time
+- 🆕 **On first playback**: a film played without a track can be queued automatically
+
+**App**
+
+- 🧭 **Guided setup**: bridge discovery and pairing, entertainment area, Jellyfin, libraries
+- 🎚️ **Live look**: brightness, saturation, minimum brightness, smoothing and sync offset, applied during the film
+- 💡 **Find a light**: click one in the area view and it blinks
+- 🐳 **One container**: a single Rust binary serves the player, the API and the UI
+
+<table>
+  <tr>
+    <td width="68%"><img src="docs/screenshots/library.jpg" alt="Library: analyzed films and episodes, queue" /></td>
+    <td width="32%"><img src="docs/screenshots/mobile.jpg" alt="Now playing on a phone" /></td>
+  </tr>
+</table>
+
+## 🚀 Run it
+
+### ☂️ Umbrel
+
+Add the community app store `https://github.com/mathieuletyrant/umbrel-community-app-store`, install **lueur** and allow GPU access. Umbrel's Jellyfin and lueur both see your files under `/downloads`.
+
+### 🐳 Docker
 
 ```sh
-docker build -t lueur .
 docker run -d --name lueur -p 8080:8080 \
   -v lueur-data:/data \
-  -v /home/umbrel/umbrel/data/storage/downloads:/media:ro \
+  -v /path/to/media:/media:ro \
   --device /dev/dri:/dev/dri \
-  lueur
+  ghcr.io/mathieuletyrant/lueur:latest
 ```
 
-Open `http://<host>:8080` and follow Setup: Bridge → Pairing → Area → Jellyfin → Libraries, then **Scan now** in Library. The config and the tracks live in `/data`.
+Open http://localhost:8080 and follow **Setup**, then **Library → Scan now**.
 
-Bridge discovery uses the Hue cloud (works from inside Docker) and mDNS (needs `--network host`); you can always type the IP.
+| Env | Default | |
+|---|---|---|
+| `LUEUR_CONFIG` | `/data/lueur.json` | Config written by the UI; the tracks go to `tracks/` next to it |
+| `LUEUR_PORT` | `8080` | |
+| `RUST_LOG` | `lueur=info` | `lueur=debug` adds clock re-syncs |
 
-## Development
+The image is amd64, tagged `latest`, `x.y` and `x.y.z`. `--device /dev/dri` is optional: without a GPU, the analysis runs on the CPU.
+
+> [!TIP]
+> Bridge discovery uses the Hue cloud, which works from inside Docker, and mDNS, which needs `--network host`. You can always type the bridge's IP.
+
+## 🪼 Jellyfin
+
+1. Create an **API key** (Dashboard → API keys). It must be an admin key, to read file paths.
+2. In lueur → Setup → Jellyfin, paste the server URL and the key. On Umbrel: `http://jellyfin_server_1:8096`.
+3. Optionally, follow one device only, e.g. the living room Apple TV.
+
+> [!TIP]
+> When Jellyfin and lueur see the files under different paths (different containers or machines), pick lueur's folder for each library in Setup → Libraries.
+
+## 💡 Hue
+
+1. In the Hue app, create an **entertainment area** around your TV (Settings → Entertainment areas) and place the lights where they are.
+2. In lueur → Setup, pick your bridge and press its link button.
+3. Lights late on cuts? Raise **Sync offset** in Look (e.g. +500 ms).
+
+<img src="docs/screenshots/look.jpg" alt="Look: brightness, saturation, smoothing and sync offset with a live preview" />
+
+## 🛠️ Develop
 
 You need Rust, ffmpeg, OpenSSL, Node 22 and pnpm. On macOS:
 
@@ -42,55 +101,32 @@ You need Rust, ffmpeg, OpenSSL, Node 22 and pnpm. On macOS:
 brew install rust ffmpeg openssl@3 pnpm
 pnpm install
 OPENSSL_DIR="$(brew --prefix openssl@3)" cargo run -- serve   # API + UI on :8080
-pnpm dev                                                       # UI with hot reload on :5173, proxies /api to :8080
-pnpm build                                                     # UI, then the release binary with the UI inside
-pnpm check                                                     # typecheck + cargo test
+pnpm dev             # UI with hot reload on :5173, proxies /api to :8080
+pnpm check           # typecheck + cargo test
+pnpm build           # UI, then the release binary with the UI inside
 ```
 
-Debug builds read the UI from `apps/web/dist`, release builds embed it.
-
-## CLI
-
-The UI covers the usual flow; the CLI stays for scripts and debugging.
-
-```sh
-lueur serve                                   # web UI + player (Docker default)
-lueur pair 192.168.68.xx                      # pair (press the bridge's link button)
-lueur areas                                   # list entertainment areas and channels
-lueur test --seconds 10                       # rainbow test pattern
-lueur analyze /downloads/movies -j 2          # analyze a folder (skips up-to-date tracks)
-lueur run                                     # player only, no UI
-lueur inspect track.lueur --at 754            # print the grid at a given time
+```
+apps/server      Rust · tokio · axum · OpenSSL (DTLS) · ffmpeg
+  src/analyze    ffmpeg decoding, black bars, color grid
+  src/track      .lueur track format (zstd)
+  src/hue        bridge REST API, discovery, Entertainment stream (DTLS 1.2 PSK)
+  src/jellyfin   now playing, playback clock, libraries, devices
+  src/player     Jellyfin → track → lights at 50 Hz, live status
+  src/queue      background analysis queue
+  src/server     `lueur serve`: HTTP API + embedded UI
+apps/web         React 19 · Vite · Tailwind 4 · TypeScript
+  src/views      one file per screen (Now, Library, Look, Setup)
+  src/components area view, folder picker
 ```
 
-## Configuration (`lueur.json`)
+The CLI stays for scripts and debugging: `lueur analyze <dirs> -j 2`, `lueur pair <ip>`, `lueur areas`, `lueur test`, `lueur run` (player only), `lueur inspect track.lueur --at 754`.
 
-Written by the UI; editing it by hand works too.
+### 📦 Releases
 
-```json
-{
-  "store": "/data/tracks",
-  "hue": { "bridge": "192.168.68.xx", "username": "…", "clientkey": "…", "area": "Living room TV" },
-  "jellyfin": { "url": "http://192.168.68.58:8096", "api_key": "…", "device": "Apple TV" },
-  "libraries": [{ "name": "Movies", "jellyfin": "/media/movies", "path": "/media/movies" }],
-  "look": { "brightness": 1.0, "saturation": 1.15, "min_brightness": 0.0, "smoothing_ms": 60, "offset_ms": 0 },
-  "auto_analyze": true,
-  "jobs": 1
-}
-```
+Fully automatic, driven by [Conventional Commits](https://www.conventionalcommits.org) (`feat:` → minor, `fix:` → patch):
 
-- `libraries`: Jellyfin folder → the same folder as seen by lueur (they differ when Jellyfin runs in another container). `path_map` (`[{ "from", "to" }]`) still works for extra mappings.
-- `store`: defaults to `tracks/` next to the config file.
-- `jellyfin.device`: only follow one device (substring of its name or client).
-- `look.offset_ms`: if the lights change late on cuts, increase it (e.g. 500).
-- `auto_analyze`: a film played without a track is queued for analysis.
-- The Jellyfin API key must be an admin key (needed to get the file path).
+1. Every push to `main` opens or updates a **release PR** with the next version and the CHANGELOG.
+2. Merging it creates the tag and GitHub release, then builds and publishes the Docker image.
 
-## Tests
-
-`cargo test` covers extraction (black bars, grid), the track format, the HueStream packet, channel/screen mapping, the clock, Jellyfin date parsing, path mapping, the analysis queue and config patches. The whole stack was also run end to end against a fake bridge (REST + `openssl s_server` in DTLS PSK mode) and a fake Jellyfin.
-
-## To do
-
-- Radarr/Sonarr import webhook to Scan automatically; Jellyfin websocket instead of polling.
-- Umbrel app packaging (`mathieu-lueur`).
+📖 Vocabulary: [GLOSSARY.md](GLOSSARY.md) · 🧭 Decisions: [docs/adr](docs/adr)
