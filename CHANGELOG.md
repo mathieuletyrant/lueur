@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/mathieuletyrant/lueur/compare/v0.14.2...v0.15.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **look:** intensity presets, from Subtle to Intense ([902ddcd](https://github.com/mathieuletyrant/lueur/commit/902ddcd7b50747d6db02119be7773aa4268120e2))
+
 ## [0.14.2](https://github.com/mathieuletyrant/lueur/compare/v0.14.1...v0.14.2) (2026-11-02)
 
 
