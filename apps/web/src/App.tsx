@@ -90,12 +90,23 @@ export default function App() {
   return (
     <AppCtx.Provider value={ctx}>
       <div className="min-h-dvh md:grid md:grid-cols-[232px_1fr]">
-        <aside className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/80 backdrop-blur-xl md:h-dvh md:border-r md:border-b-0">
+        <aside className="pt-safe sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/80 backdrop-blur-xl md:h-dvh md:border-r md:border-b-0">
           <div className="flex items-center gap-2.5 px-4 py-3.5 md:px-5 md:py-5">
             <Logo />
             <span className="text-[15px] font-semibold tracking-tight">lueur</span>
+            {/* Mobile: the health dots sit in the top bar, the nav at the bottom. */}
+            <span className="ml-auto flex gap-3 md:hidden">
+              {health.map((h) => (
+                <span key={h.label} className="flex items-center gap-1.5 text-xs text-zinc-500">
+                  <span
+                    className={cx("size-1.5 rounded-full", h.ok ? "bg-emerald-400" : h.warn ? "bg-zinc-600" : "bg-rose-400")}
+                  />
+                  {h.label}
+                </span>
+              ))}
+            </span>
           </div>
-          <nav className="flex gap-1 overflow-x-auto px-3 pb-2 md:flex-col md:px-3 md:pb-0" aria-label="Main">
+          <nav className="hidden flex-col gap-1 px-3 md:flex" aria-label="Main">
             {(Object.keys(views) as View[]).map((k) => {
               const { label, icon: Icon } = views[k];
               const todo = k === "setup" && steps.some((s) => !s);
@@ -136,13 +147,41 @@ export default function App() {
           </div>
         </aside>
 
-        <main className="mx-auto w-full max-w-5xl px-4 py-6 md:px-10 md:py-10">
+        <main className="mx-auto w-full max-w-5xl px-4 pt-6 pb-28 md:px-10 md:py-10">
           {view === "now" && <Now />}
           {view === "library" && <LibraryView />}
           {view === "look" && <LookView />}
           {view === "setup" && <Setup />}
         </main>
       </div>
+
+      <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-white/[0.06] bg-[#09090b]/90 backdrop-blur-xl md:hidden" aria-label="Main">
+        <div className="mx-auto flex max-w-md">
+          {(Object.keys(views) as View[]).map((k) => {
+            const { label, icon: Icon } = views[k];
+            const on = view === k;
+            return (
+              <a
+                key={k}
+                href={`#/${k}`}
+                aria-current={on ? "page" : undefined}
+                // Tapping the tab you're on scrolls back to the top, like any iOS app.
+                onClick={() => on && scrollTo({ top: 0, behavior: "smooth" })}
+                className={cx(
+                  "group relative flex flex-1 flex-col items-center gap-0.5 pt-2 pb-1 text-[11px] font-semibold transition-colors",
+                  on ? "text-zinc-50" : "text-zinc-500",
+                )}
+              >
+                <Icon className="size-6 transition-transform group-active:scale-90" strokeWidth={on ? 2.2 : 1.7} />
+                {label}
+                {k === "setup" && steps.some((s) => !s) && (
+                  <span className="absolute top-1.5 right-[calc(50%-18px)] size-1.5 rounded-full bg-glow-1" aria-label="incomplete" />
+                )}
+              </a>
+            );
+          })}
+        </div>
+      </nav>
     </AppCtx.Provider>
   );
 }
