@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/mathieuletyrant/lueur/compare/v0.16.0...v0.16.1) (2026-11-02)
+
+
+### 🐛 Fixes
+
+* **player:** a session first seen paused leaves the lights off ([247473a](https://github.com/mathieuletyrant/lueur/commit/247473af02287fbe0a12f64b32fefa7b4e24737d))
+
 ## [0.16.0](https://github.com/mathieuletyrant/lueur/compare/v0.15.0...v0.16.0) (2026-11-02)
 
 
