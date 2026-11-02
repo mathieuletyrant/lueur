@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight, Clapperboard, Loader2, Pause, Rainbow, Sparkles, Tv } from "lucide-react";
 import { api } from "../api";
 import { setupSteps, useApp } from "../App";
@@ -34,6 +34,7 @@ export function Now() {
       {p?.jellyfin_error && <Alert tone="amber">Jellyfin: {p.jellyfin_error}</Alert>}
 
       <NowPlaying />
+      <SyncCard />
 
       <div className="grid gap-5 lg:grid-cols-5">
         <AreaCard />
@@ -203,6 +204,58 @@ function QueueCard() {
           </Empty>
         )}
       </div>
+    </Card>
+  );
+}
+
+const STEP = 100;
+
+/** How far ahead or behind the lights run compared to the picture. */
+function SyncCard() {
+  const { cfg, patch } = useApp();
+  const [offset, setOffset] = useState(cfg.look.offset_ms);
+  const [error, setError] = useState<string>();
+  const timer = useRef<number>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const set = (v: number) => {
+    v = Math.max(-10000, Math.min(10000, Math.round(v / STEP) * STEP));
+    setOffset(v);
+    clearTimeout(timer.current);
+    timer.current = window.setTimeout(
+      () => patch({ look: { offset_ms: v } }).then(() => setError(undefined), (e: Error) => setError(e.message)),
+      150,
+    );
+  };
+
+  return (
+    <Card className="px-5 py-4">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div className="min-w-48 flex-1">
+          <div className="flex items-baseline justify-between gap-3">
+            <label htmlFor="sync-offset" className="text-sm font-medium">Sync offset</label>
+            <span className="text-sm text-zinc-300 tabular-nums">{offset > 0 ? "+" : ""}{(offset / 1000).toFixed(1)} s</span>
+          </div>
+          <input
+            id="sync-offset"
+            type="range"
+            min={-10000}
+            max={10000}
+            step={STEP}
+            value={offset}
+            onChange={(e) => set(Number(e.target.value))}
+            className="mt-2 w-full"
+            style={{ "--p": `${((offset + 10000) / 20000) * 100}%` } as React.CSSProperties}
+          />
+          <p className="mt-1 text-xs text-zinc-500">Lights late on cuts? Move right. Early? Move left. Applies live.</p>
+        </div>
+        <div className="flex gap-2">
+          <Button onClick={() => set(offset - STEP)} aria-label="Lights earlier by 0.1 s">−0.1 s</Button>
+          <Button onClick={() => set(offset + STEP)} aria-label="Lights later by 0.1 s">+0.1 s</Button>
+          <Button variant="ghost" onClick={() => set(0)} disabled={offset === 0}>Reset</Button>
+        </div>
+      </div>
+      {error && <div className="mt-3"><Alert>{error}</Alert></div>}
     </Card>
   );
 }

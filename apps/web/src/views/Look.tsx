@@ -24,7 +24,6 @@ const specs: Spec[] = [
   { key: "min_brightness", label: "Minimum brightness", hint: "Keeps a soft light during dark scenes instead of going black.", min: 0, max: 0.3, step: 0.01, fmt: (v) => (v ? `${Math.round(v * 100)}%` : "Off") },
   { key: "smoothing_ms", label: "Smoothing", hint: "Higher is calmer, lower follows cuts more sharply.", min: 0, max: 500, step: 10, fmt: (v) => (v ? `${v} ms` : "Off") },
   { key: "spread", label: "Spread", hint: "How much of the screen each light reads. Lower: each light more distinct. Higher: calmer, closer colors.", min: 0.4, max: 3, step: 0.1, fmt: (v) => `${Math.round(v * 100)}%` },
-  { key: "offset_ms", label: "Sync offset", hint: "Lights change late on cuts? Increase it. Early? Decrease it.", min: -10000, max: 10000, step: 100, fmt: (v) => `${v > 0 ? "+" : ""}${v} ms` },
 ];
 
 // Same maths as the player (apps/server/src/color.rs), for the preview.
@@ -54,6 +53,9 @@ const palette: { name: string; c: [number, number, number] }[] = [
   { name: "Dark room", c: [14, 10, 8] },
 ];
 
+// The sync offset lives on the Now page; never overwrite it from here.
+const withoutOffset = ({ offset_ms: _, ...rest }: Look) => rest;
+
 export function LookView() {
   const { cfg, patch, status } = useApp();
   const [look, setLook] = useState<Look>(cfg.look);
@@ -66,7 +68,7 @@ export function LookView() {
     setLook(next);
     clearTimeout(timer.current);
     timer.current = window.setTimeout(
-      () => patch({ look: next }).then(() => setError(undefined), (e: Error) => setError(e.message)),
+      () => patch({ look: withoutOffset(next) }).then(() => setError(undefined), (e: Error) => setError(e.message)),
       150,
     );
   };

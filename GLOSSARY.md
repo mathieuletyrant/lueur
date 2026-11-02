@@ -51,5 +51,9 @@ The folder holding all Tracks.
 _Avoid_: Cache, library
 
 **Look**:
-The user's color tuning applied at playback (brightness, saturation, smoothing, offset).
+The user's color tuning applied at playback: brightness, saturation, smoothing, and how much of the screen each light reads.
 _Avoid_: Settings, profile
+
+**Sync offset**:
+How far ahead or behind the lights run compared to the picture, set by the user to cancel a client's or a TV's delay.
+_Avoid_: Delay, latency, lag
