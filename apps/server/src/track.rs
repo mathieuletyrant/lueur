@@ -5,7 +5,7 @@
 //! `LUEUR` | version u8 | fps f32 | cols u8 | rows u8 | frames u32 |
 //! source size u64 | len u16 | source path (UTF-8) | zstd(sRGB u8 grids)
 
-use crate::color::{Rgb, srgb_to_linear};
+use crate::color::{Rgb, linear_to_srgb, luminance, srgb_to_linear};
 use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -23,6 +23,8 @@ pub struct Track {
     pub source: String,
     /// Concatenated grids, `cols * rows * 3` sRGB bytes per frame.
     pub frames: Vec<u8>,
+    /// Brightness gain that lifts a dark film to a usual level (≥ 1), set by `load`.
+    pub exposure: f32,
 }
 
 impl Track {
@@ -82,11 +84,56 @@ impl Track {
         let src_len = u16::from_le_bytes(data[24..26].try_into()?) as usize;
         let source = String::from_utf8(data[26..26 + src_len].to_vec())?;
         let frames = zstd::decode_all(&data[26 + src_len..])?;
-        let t = Track { fps, cols, rows, source_size, source, frames };
+        let mut t = Track { fps, cols, rows, source_size, source, frames, exposure: 1.0 };
+        t.exposure = t.measure_exposure();
         if t.frame_count() != count {
             bail!("truncated track ({} frames instead of {count})", t.frame_count());
         }
         Ok(t)
+    }
+
+    /// How much to brighten this film so its usual brightest area reaches a
+    /// common level: the 75th percentile, over the film, of each moment's
+    /// brightest cell. Only ever brightens, at most 3×.
+    fn measure_exposure(&self) -> f32 {
+        let n = self.frame_count();
+        let mut levels: Vec<f32> = (0..n)
+            .step_by(6)
+            .map(|i| {
+                self.frame(i)
+                    .chunks_exact(3)
+                    .map(|c| luminance([srgb_to_linear(c[0]), srgb_to_linear(c[1]), srgb_to_linear(c[2])]))
+                    .fold(0.0, f32::max)
+            })
+            .collect();
+        if levels.is_empty() {
+            return 1.0;
+        }
+        let k = levels.len() * 3 / 4;
+        let p75 = *levels.select_nth_unstable_by(k, f32::total_cmp).1;
+        (0.6 / p75.max(1e-3)).clamp(1.0, 3.0)
+    }
+
+    /// The film's colors from start to end: `n` stripes, each the average of
+    /// its stretch of the film.
+    pub fn barcode(&self, n: usize) -> Vec<[u8; 3]> {
+        let frames = self.frame_count();
+        (0..n)
+            .map(|i| {
+                let (a, b) = (i * frames / n, ((i + 1) * frames / n).max(i * frames / n + 1).min(frames));
+                let mut acc = [0f32; 3];
+                let mut count = 0f32;
+                for f in (a..b).step_by(((b - a) / 8).max(1)) {
+                    for c in self.frame(f).chunks_exact(3) {
+                        for ch in 0..3 {
+                            acc[ch] += srgb_to_linear(c[ch]);
+                        }
+                        count += 1.0;
+                    }
+                }
+                acc.map(|v| (linear_to_srgb(v / count.max(1.0)) * 255.0).round() as u8)
+            })
+            .collect()
     }
 
     /// Grid in linear light at time `t` (seconds), interpolated between
@@ -191,7 +238,8 @@ mod tests {
         let mut frames = vec![0u8; 2 * 2 * 3 * 2];
         frames[..12].fill(0); // frame 0 black
         frames[12..].fill(255); // frame 1 white
-        let t = Track { fps: 10.0, cols: 2, rows: 2, source_size: 42, source: "/x/film.mkv".into(), frames };
+        let t =
+            Track { fps: 10.0, cols: 2, rows: 2, source_size: 42, source: "/x/film.mkv".into(), frames, exposure: 1.0 };
         let p = dir.join("t.lueur");
         t.save(&p).unwrap();
         let l = Track::load(&p).unwrap();
@@ -210,12 +258,20 @@ mod tests {
             source_size: 0,
             source: String::new(),
             frames: [[0; 30], [255; 30]].concat(),
+            exposure: 1.0,
         };
         let mut g = Vec::new();
         cut.sample_centered(0.95, 0.3, &mut g);
         assert!((g[0][0] - 0.5).abs() < 0.05, "{:?}", g[0]);
         cut.sample_centered(0.7, 0.3, &mut g);
         assert!(g[0][0] > 0.0 && g[0][0] < 0.2, "{:?}", g[0]);
+        // Barcode: black then white.
+        assert_eq!(cut.barcode(2), vec![[0; 3], [255; 3]]);
+        // Exposure: a dim film is lifted, a bright one left alone.
+        let dim = Track { frames: vec![60; 3 * 100], ..cut.clone() };
+        assert!(dim.measure_exposure() > 2.0, "{}", dim.measure_exposure());
+        let bright = Track { frames: vec![230; 3 * 100], ..cut.clone() };
+        assert_eq!(bright.measure_exposure(), 1.0);
         std::fs::remove_dir_all(dir).ok();
     }
 }

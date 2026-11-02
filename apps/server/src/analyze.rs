@@ -212,6 +212,7 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
         source_size,
         source: video.to_string_lossy().into_owned(),
         frames,
+        exposure: 1.0,
     };
     Ok((track, Stats { elapsed: start.elapsed().as_secs_f64(), hwaccel: hw }))
 }

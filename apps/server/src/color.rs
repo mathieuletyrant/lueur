@@ -55,6 +55,10 @@ pub struct Look {
     /// Smooth around each moment (the Track is known ahead, so no delay)
     /// rather than after it like a live signal (which lags by `smoothing_ms`).
     pub centered_smoothing: bool,
+    /// Brighten dark films to a usual level (gain measured on each Track).
+    pub auto_exposure: bool,
+    /// How much grey, washed-out colors lean to a warm white (0 = none, 1 = fully).
+    pub warm_greys: f32,
 }
 
 impl Default for Look {
@@ -69,13 +73,34 @@ impl Default for Look {
             spread: 1.0,
             fit_area: true,
             centered_smoothing: true,
+            auto_exposure: true,
+            warm_greys: 0.5,
         }
     }
 }
 
+/// A 2700 K warm white, in linear light.
+const WARM: Rgb = [1.0, 0.456, 0.147];
+
 impl Look {
+    /// This Look on a film whose Track measured `exposure`.
+    pub fn with_exposure(&self, exposure: f32) -> Look {
+        let gain = if self.auto_exposure { exposure } else { 1.0 };
+        Look { brightness: self.brightness * gain, ..self.clone() }
+    }
+
     pub fn apply(&self, mut c: Rgb) -> Rgb {
         let l = luminance(c);
+        // Greys (low saturation) lean to a warm white of the same brightness.
+        let max = c[0].max(c[1]).max(c[2]);
+        if self.warm_greys > 0.0 && max > 1e-4 {
+            let grey = (1.0 - (max - c[0].min(c[1]).min(c[2])) / max / 0.3).clamp(0.0, 1.0);
+            let w = self.warm_greys.clamp(0.0, 1.0) * grey;
+            let k = l / luminance(WARM);
+            for (v, t) in c.iter_mut().zip(WARM) {
+                *v += (t * k - *v) * w;
+            }
+        }
         for v in &mut c {
             *v = (l + (*v - l) * self.saturation).max(0.0) * self.brightness;
         }
@@ -112,8 +137,20 @@ mod tests {
     }
 
     #[test]
+    fn greys_lean_warm_colors_stay() {
+        let look = Look { saturation: 1.0, warm_greys: 1.0, ..Default::default() };
+        let g = look.apply([0.3, 0.3, 0.3]);
+        assert!(g[0] > g[1] && g[1] > g[2], "{g:?}");
+        assert!((luminance(g) - 0.3).abs() < 0.02, "{g:?}");
+        let red = look.apply([0.8, 0.1, 0.1]);
+        assert!(red.iter().zip([0.8, 0.1, 0.1]).all(|(a, b)| (a - b).abs() < 1e-5), "{red:?}");
+        let off = Look { warm_greys: 0.0, ..look };
+        assert_eq!(off.apply([0.3, 0.3, 0.3]), [0.3, 0.3, 0.3]);
+    }
+
+    #[test]
     fn look_keeps_hue_when_over_range() {
-        let look = Look { brightness: 2.0, saturation: 1.0, ..Default::default() };
+        let look = Look { brightness: 2.0, saturation: 1.0, warm_greys: 0.0, ..Default::default() };
         let c = look.apply([0.8, 0.4, 0.0]);
         assert!((c[0] - 1.0).abs() < 1e-6 && (c[1] - 0.5).abs() < 1e-6);
     }

@@ -33,6 +33,8 @@ struct App {
     hold: Mutex<Option<Hold>>,
     /// A still frame is being streamed.
     holding: AtomicBool,
+    /// Barcodes by track file, with the track's modification time.
+    barcodes: Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, Arc<Vec<String>>)>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -119,6 +121,7 @@ pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> 
         last_scan: Mutex::new(None),
         hold: Mutex::new(None),
         holding: AtomicBool::new(false),
+        barcodes: Default::default(),
     });
     let sup = tokio::spawn(supervise(app.clone()));
     tokio::spawn(auto_scan(app.clone()));
@@ -139,6 +142,7 @@ pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> 
         .route("/api/videos", get(videos))
         .route("/api/analyze", post(analyze))
         .route("/api/frame", get(frame))
+        .route("/api/barcode", get(barcode))
         .route("/api/hold", axum::routing::put(put_hold).delete(delete_hold))
         .route("/api/fs", get(fs))
         .fallback(web)
@@ -495,6 +499,37 @@ async fn frame(State(app): State<Arc<App>>, Query(q): Query<FrameQuery>) -> Resu
         return Err(bad(format!("no frame: {}", String::from_utf8_lossy(&out.stderr).trim())));
     }
     Ok(([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=3600")], out.stdout).into_response())
+}
+
+#[derive(Deserialize)]
+struct BarcodeQuery {
+    path: PathBuf,
+}
+
+/// The film's colors from start to end (see `Track::barcode`).
+async fn barcode(State(app): State<Arc<App>>, Query(q): Query<BarcodeQuery>) -> Result<Response, ApiError> {
+    app.library_video(&q.path)?;
+    let tp = track::track_path(&app.config().store, &q.path);
+    let not_yet = || ApiError(StatusCode::NOT_FOUND, "not analyzed yet".into());
+    let modified = std::fs::metadata(&tp).and_then(|m| m.modified()).map_err(|_| not_yet())?;
+    // A track decompresses to tens of MB: compute each barcode once.
+    let cached = app.barcodes.lock().unwrap().get(&tp).filter(|c| c.0 == modified).map(|c| c.1.clone());
+    let hex = match cached {
+        Some(h) => h,
+        None => {
+            let t = tp.clone();
+            let bar = tokio::task::spawn_blocking(move || track::Track::load(&t).map(|t| t.barcode(240)))
+                .await?
+                .map_err(|_| not_yet())?;
+            let h: Arc<Vec<String>> =
+                Arc::new(bar.iter().map(|c| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])).collect());
+            app.barcodes.lock().unwrap().insert(tp, (modified, h.clone()));
+            h
+        }
+    };
+    let hex = (*hex).clone();
+    // The URL carries the track's duration: a new analysis gets a new URL.
+    Ok(([(header::CACHE_CONTROL, "max-age=86400")], Json(hex)).into_response())
 }
 
 /// A moment of a video shown on the lights, to tune the Look in front of them.

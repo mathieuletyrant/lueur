@@ -136,6 +136,8 @@ pub struct Playing {
     pub has_track: bool,
     /// How late the app's check-in runs, as learned (seconds).
     pub report_delay: Option<f64>,
+    /// Brightness gain applied to this film (auto exposure).
+    pub exposure: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -350,6 +352,7 @@ impl Player {
                     paused: np.paused,
                     has_track: current.as_ref().is_some_and(|c| c.1.is_some()),
                     report_delay: np.report_delay,
+                    exposure: None,
                 });
             }
 
@@ -407,7 +410,7 @@ impl Player {
 
             let (track, mapping) = playable.unwrap();
             let Some(pos) = clock.now() else { continue };
-            let look = &look;
+            let look = &look.with_exposure(track.exposure);
             let t = pos + look.offset_ms / 1000.0;
             if look.centered_smoothing {
                 track.sample_centered(t, look.smoothing_ms as f64 / 1000.0, &mut grid);
@@ -424,6 +427,7 @@ impl Player {
             self.set_streaming(true, &colors);
             if let Some(p) = self.status().playing.as_mut() {
                 p.position = pos;
+                p.exposure = look.auto_exposure.then_some(track.exposure);
             }
             if let Err(e) = session.as_mut().unwrap().stream.send(&colors) {
                 warn!("sending to the bridge: {e:#}");
@@ -499,6 +503,7 @@ pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Resul
 
 /// The colors the area shows for a Track at `t` seconds, with `look` applied.
 pub fn still_colors(area: &Area, track: &Track, t: f64, look: &Look) -> Vec<(u8, Rgb)> {
+    let look = &look.with_exposure(track.exposure);
     let mut grid = Vec::new();
     let mut colors = Vec::new();
     track.sample_centered(t, if look.centered_smoothing { look.smoothing_ms as f64 / 1000.0 } else { 0.0 }, &mut grid);
