@@ -17,6 +17,9 @@
 
 :root {
   color-scheme: dark;
+  /* Keep the scrollbar's room even when a page is short: content doesn't
+     shift sideways when a panel opens or the page changes. */
+  scrollbar-gutter: stable;
 }
 
 body {
