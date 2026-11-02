@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/mathieuletyrant/lueur/compare/v0.13.1...v0.13.2) (2026-11-02)
+
+
+### 🐛 Fixes
+
+* **web:** reserve the scrollbar's room so pages don't shift sideways ([bc94203](https://github.com/mathieuletyrant/lueur/commit/bc94203cc343ee1858158dafd0c44b195e480376))
+
 ## [0.13.1](https://github.com/mathieuletyrant/lueur/compare/v0.13.0...v0.13.1) (2026-11-02)
 
 
