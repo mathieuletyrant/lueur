@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0](https://github.com/mathieuletyrant/lueur/compare/v0.8.1...v0.9.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **sync:** centered smoothing, learned report delay, tunable clock ([2cfdf3f](https://github.com/mathieuletyrant/lueur/commit/2cfdf3f1888b681f29a90d13d1d0876a98cbfc2d))
+* **web:** bottom tab bar on mobile, safe areas for the iPhone home screen ([c42fbf0](https://github.com/mathieuletyrant/lueur/commit/c42fbf05feda51d025387443293e1c0babb99dbf))
+
 ## [0.8.1](https://github.com/mathieuletyrant/lueur/compare/v0.8.0...v0.8.1) (2026-11-02)
 
 
