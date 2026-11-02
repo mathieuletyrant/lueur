@@ -82,72 +82,74 @@ export default function App() {
     },
   };
   const p = status?.player;
-  const health = [
-    { label: "Bridge", ok: cfg.paired && !p?.error, warn: !cfg.paired },
-    { label: "Jellyfin", ok: !!cfg.jellyfin.url && !p?.jellyfin_error, warn: !cfg.jellyfin.url },
-  ];
+  // One status for both services: quiet when all is well, words only when something needs you.
+  const health: { label: string; tone: "live" | "ok" | "warn" | "bad"; detail?: string } = steps.some((s) => !s)
+    ? { label: "Setup needed", tone: "warn" }
+    : p?.error
+      ? { label: "Bridge error", tone: "bad", detail: p.error }
+      : p?.jellyfin_error
+        ? { label: "Jellyfin unreachable", tone: "bad", detail: p.jellyfin_error }
+        : p?.streaming
+          ? { label: "Live", tone: "live" }
+          : { label: "Ready", tone: "ok" };
 
   return (
     <AppCtx.Provider value={ctx}>
-      <div className="min-h-dvh md:grid md:grid-cols-[232px_1fr]">
-        <aside className="pt-safe sticky top-0 z-20 border-b border-white/[0.06] bg-[#09090b]/80 backdrop-blur-xl md:h-dvh md:border-r md:border-b-0">
-          <div className="flex items-center gap-2.5 px-4 py-3.5 md:px-5 md:py-5">
-            <Logo />
-            <span className="text-[15px] font-semibold tracking-tight">lueur</span>
-            {/* Mobile: the health dots sit in the top bar, the nav at the bottom. */}
-            <span className="ml-auto flex gap-3 md:hidden">
-              {health.map((h) => (
-                <span key={h.label} className="flex items-center gap-1.5 text-xs text-zinc-500">
-                  <span
-                    className={cx("size-1.5 rounded-full", h.ok ? "bg-emerald-400" : h.warn ? "bg-zinc-600" : "bg-rose-400")}
-                  />
-                  {h.label}
-                </span>
-              ))}
-            </span>
-          </div>
-          <nav className="hidden flex-col gap-1 px-3 md:flex" aria-label="Main">
-            {(Object.keys(views) as View[]).map((k) => {
-              const { label, icon: Icon } = views[k];
-              const todo = k === "setup" && steps.some((s) => !s);
-              return (
-                <a
-                  key={k}
-                  href={`#/${k}`}
-                  aria-current={view === k ? "page" : undefined}
-                  className={cx(
-                    "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap transition",
-                    view === k ? "bg-white/[0.07] text-zinc-50" : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200",
-                  )}
-                >
-                  <Icon className="size-4" />
-                  {label}
-                  {todo && <span className="ml-auto size-1.5 rounded-full bg-glow-1" aria-label="incomplete" />}
-                </a>
-              );
-            })}
-          </nav>
-          <div className="absolute inset-x-0 bottom-0 hidden space-y-2 border-t border-white/[0.06] px-5 py-4 md:block">
-            {health.map((h) => (
-              <div key={h.label} className="flex items-center justify-between text-xs">
-                <span className="text-zinc-500">{h.label}</span>
+      <div className="pt-safe min-h-dvh">
+        {/* One top bar: logo, then the tabs (desktop) and the health dots. On mobile the tabs move to the bottom. */}
+        <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#09090b]/85 backdrop-blur-xl">
+          <div className="mx-auto flex h-14 max-w-5xl items-center gap-6 px-4 md:h-16 md:px-6">
+            <a href="#/now" className="flex items-center gap-2.5">
+              <Logo />
+              <span className="text-[17px] font-semibold tracking-tight">lueur</span>
+            </a>
+            <a
+              href={health.tone === "warn" || health.tone === "bad" ? "#/setup" : "#/now"}
+              title={health.detail ?? "Bridge and Jellyfin connected"}
+              className={cx(
+                "-ml-2 flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium transition",
+                health.tone === "live" && "text-emerald-300",
+                health.tone === "ok" && "text-zinc-500 hover:text-zinc-300",
+                health.tone === "warn" && "bg-amber-400/10 text-amber-300 ring-1 ring-amber-400/20 ring-inset",
+                health.tone === "bad" && "bg-rose-400/10 text-rose-300 ring-1 ring-rose-400/20 ring-inset",
+              )}
+            >
+              <span className="relative flex size-1.5">
+                {health.tone === "live" && <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />}
                 <span
                   className={cx(
-                    "flex items-center gap-1.5",
-                    h.ok ? "text-emerald-300" : h.warn ? "text-zinc-500" : "text-rose-300",
+                    "relative inline-flex size-1.5 rounded-full",
+                    health.tone === "warn" ? "bg-amber-400" : health.tone === "bad" ? "bg-rose-400" : "bg-emerald-400",
                   )}
-                >
-                  <span
-                    className={cx("size-1.5 rounded-full", h.ok ? "bg-emerald-400" : h.warn ? "bg-zinc-600" : "bg-rose-400")}
-                  />
-                  {h.ok ? "Connected" : h.warn ? "Not set up" : "Error"}
-                </span>
-              </div>
-            ))}
+                />
+              </span>
+              {health.label}
+            </a>
+            <nav className="ml-auto hidden gap-1 md:flex" aria-label="Main">
+              {(Object.keys(views) as View[]).map((k) => {
+                const { label, icon: Icon } = views[k];
+                const todo = k === "setup" && steps.some((s) => !s);
+                return (
+                  <a
+                    key={k}
+                    href={`#/${k}`}
+                    aria-current={view === k ? "page" : undefined}
+                    className={cx(
+                      "relative flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition",
+                      view === k ? "bg-white/[0.08] text-zinc-50" : "text-zinc-400 hover:text-zinc-100",
+                    )}
+                  >
+                    <Icon className="size-4" />
+                    {label}
+                    {todo && <span className="absolute top-1.5 right-2 size-1.5 rounded-full bg-glow-1" aria-label="incomplete" />}
+                  </a>
+                );
+              })}
+            </nav>
           </div>
-        </aside>
+        </header>
 
-        <main className="mx-auto w-full max-w-5xl px-4 pt-6 pb-28 md:px-10 md:py-10">
+        <main className="mx-auto w-full max-w-5xl px-4 pt-6 pb-28 md:px-6 md:pt-10 md:pb-12">
           {view === "now" && <Now />}
           {view === "library" && <LibraryView />}
           {view === "look" && <LookView />}
