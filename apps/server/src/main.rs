@@ -4,6 +4,7 @@ mod color;
 mod config;
 mod hue;
 mod jellyfin;
+mod lights;
 mod player;
 mod queue;
 mod render;

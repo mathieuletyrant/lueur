@@ -4,27 +4,24 @@
 use crate::clock::PlaybackClock;
 use crate::color::{Look, Rgb, linear_to_srgb};
 use crate::config::Config;
-use crate::hue::{Area, Bridge, Stream};
+use crate::hue::{Area, Bridge, Channel};
 use crate::jellyfin::{Jellyfin, NowPlaying};
+use crate::lights::{HueSink, Lights};
 use crate::queue::Queue;
 use crate::render::Renderer;
 use crate::track::{self, Track};
 use anyhow::Result;
 use serde::Serialize;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
 const FRAME: Duration = Duration::from_millis(20);
-const STOP_AFTER: Duration = Duration::from_millis(1500);
 const PAUSE_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_TRACK: Duration = Duration::from_secs(5);
-
-struct Session {
-    stream: Stream,
-}
 
 /// What the player is doing, for the UI.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -64,11 +61,47 @@ pub struct LiveChannel {
 }
 
 /// State shared between the player and the API: the Look can change while
-/// a film plays, the status is read by the UI.
+/// a film plays, the status is read by the UI, and the UI can ask for a
+/// still frame or the test pattern, which the player shows when no film does.
 #[derive(Default)]
 pub struct Live {
     pub look: Mutex<Look>,
     pub status: Mutex<Status>,
+    pub hold: Mutex<Option<Hold>>,
+    pub test: Mutex<Option<TestPattern>>,
+}
+
+/// A moment of a video held on the lights, to tune the Look in front of them.
+#[derive(Debug, Clone, Serialize)]
+pub struct Hold {
+    pub path: PathBuf,
+    pub t: f64,
+    #[serde(skip)]
+    pub until: Instant,
+}
+
+/// The rainbow, or one channel blinking (to find a light), for a few seconds.
+#[derive(Debug, Clone)]
+pub struct TestPattern {
+    pub only: Option<u8>,
+    pub start: Instant,
+    pub until: Instant,
+}
+
+impl TestPattern {
+    fn colors(&self, channels: &[Channel], now: Instant) -> Vec<(u8, Rgb)> {
+        let t = (now - self.start).as_secs_f32();
+        let n = channels.len().max(1) as f32;
+        channels
+            .iter()
+            .enumerate()
+            .map(|(i, ch)| match self.only {
+                Some(id) if id == ch.channel_id && t.fract() < 0.6 => (id, [1.0; 3]),
+                Some(_) => (ch.channel_id, [0.0; 3]),
+                None => (ch.channel_id, hue_to_rgb(t * 0.25 + i as f32 / n)),
+            })
+            .collect()
+    }
 }
 
 impl Live {
@@ -85,7 +118,7 @@ impl Live {
 
 pub struct Player {
     cfg: Config,
-    bridge: Bridge,
+    lights: Lights<HueSink>,
     area: Area,
     live: Arc<Live>,
     queue: Arc<Queue>,
@@ -111,25 +144,12 @@ impl Player {
                 .collect(),
             ..Default::default()
         };
-        Ok(Self { cfg, bridge, area, live, queue })
+        let lights = Lights::new(HueSink::new(bridge, &area.id), live.clone());
+        Ok(Self { cfg, lights, area, live, queue })
     }
 
     fn status(&self) -> std::sync::MutexGuard<'_, Status> {
         self.live.status.lock().unwrap()
-    }
-
-    async fn open(&self) -> Result<Session> {
-        let stream = self.bridge.open_stream(&self.area.id).await?;
-        info!("Entertainment stream open");
-        Ok(Session { stream })
-    }
-
-    async fn close(&self, s: Session) {
-        s.stream.close();
-        if let Err(e) = self.bridge.set_streaming(&self.area.id, false).await {
-            warn!("stopping the stream: {e:#}");
-        }
-        info!("stream stopped, lights back to their previous state");
     }
 
     /// The Track of what is playing, if it exists already.
@@ -161,8 +181,8 @@ impl Player {
         None
     }
 
-    /// Runs until `stop` completes, then closes the stream.
-    pub async fn run(self, stop: impl Future<Output = ()>) -> Result<()> {
+    /// Runs until `stop` completes, then gives the lights back.
+    pub async fn run(mut self, stop: impl Future<Output = ()>) -> Result<()> {
         let jf = Arc::new(Jellyfin::new(
             &self.cfg.jellyfin.url,
             &self.cfg.jellyfin.api_key,
@@ -213,12 +233,11 @@ impl Player {
 
         let mut clock = PlaybackClock::new(&self.cfg.sync);
         let mut current: Option<(String, Option<Arc<Track>>)> = None;
-        let mut session: Option<Session> = None;
-        let mut retry_at = Instant::now();
-        let mut idle_since: Option<Instant> = None;
         let mut paused_since: Option<Instant> = None;
         let mut retry_track_at = Instant::now();
         let mut renderer = Renderer::new(&self.area.channels);
+        let mut still_renderer = Renderer::new(&self.area.channels);
+        let mut still: Option<(PathBuf, Track)> = None;
         let mut tick = tokio::time::interval(FRAME);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last = Instant::now();
@@ -281,113 +300,75 @@ impl Player {
                 }
             }
 
-            let playable = current.as_ref().and_then(|(_, t)| t.clone());
-            let want = playable.is_some() && paused_since.is_none_or(|p| now - p < PAUSE_TIMEOUT);
-            if !want {
-                let since = *idle_since.get_or_insert(now);
-                if now - since >= STOP_AFTER
-                    && let Some(s) = session.take()
-                {
-                    self.close(s).await;
-                    self.set_streaming(false, &[]);
-                }
-                continue;
-            }
-            idle_since = None;
-
-            if session.is_none() {
-                if now < retry_at {
-                    continue;
-                }
-                match self.open().await {
-                    Ok(s) => session = Some(s),
-                    Err(e) => {
-                        warn!("opening the stream: {e:#} (retrying in 5 s)");
-                        retry_at = now + Duration::from_secs(5);
-                        continue;
-                    }
-                }
-            }
-
-            let track = playable.unwrap();
-            let Some(pos) = clock.position(now) else { continue };
+            // What the lights show, by priority: the film, a still frame, the test pattern.
+            let film = current
+                .as_ref()
+                .and_then(|(_, t)| t.clone())
+                .filter(|_| paused_since.is_none_or(|p| now - p < PAUSE_TIMEOUT));
             let look = self.live.look.lock().unwrap().clone();
-            let colors = renderer.colors(&track, pos + look.offset_ms / 1000.0, &look, dt);
-            self.set_streaming(true, colors);
-            if let Some(p) = self.status().playing.as_mut() {
-                p.position = pos;
-                p.exposure = look.auto_exposure.then_some(track.exposure);
-            }
-            if let Err(e) = session.as_mut().unwrap().stream.send(colors) {
-                warn!("sending to the bridge: {e:#}");
-                if let Some(s) = session.take() {
-                    self.close(s).await;
+            let colors = if let Some(track) = film
+                && let Some(pos) = clock.position(now)
+            {
+                // A film takes the lights back from a still frame or a test.
+                self.live.hold.lock().unwrap().take();
+                self.live.test.lock().unwrap().take();
+                if let Some(p) = self.status().playing.as_mut() {
+                    p.position = pos;
+                    p.exposure = look.auto_exposure.then_some(track.exposure);
                 }
-                self.set_streaming(false, &[]);
-                retry_at = now + Duration::from_secs(2);
-            }
+                Some(renderer.colors(&track, pos + look.offset_ms / 1000.0, &look, dt).to_vec())
+            } else if let Some(h) = self.live_hold(now) {
+                if still.as_ref().is_none_or(|s| s.0 != h.path) {
+                    // ponytail: loads on the frame loop (~50 ms once per film), spawn_blocking if it stutters.
+                    still = Track::load(&track::track_path(&self.cfg.store, &h.path)).ok().map(|t| (h.path.clone(), t));
+                }
+                // Same rendering as a film: moving the slider fades like a cut does.
+                still.as_ref().map(|(_, t)| still_renderer.colors(t, h.t, &look, dt).to_vec())
+            } else {
+                self.live_test(now).map(|t| t.colors(&self.area.channels, now))
+            };
+            self.lights.show(now, colors.as_deref()).await;
         }
 
         poller.abort();
-        if let Some(s) = session.take() {
-            self.close(s).await;
-        }
-        self.set_streaming(false, &[]);
+        self.lights.close().await;
         Ok(())
     }
 
-    fn set_streaming(&self, on: bool, colors: &[(u8, Rgb)]) {
-        self.live.set_streaming(on, colors);
+    /// The still frame asked for, unless it expired.
+    fn live_hold(&self, now: Instant) -> Option<Hold> {
+        let mut h = self.live.hold.lock().unwrap();
+        if h.as_ref().is_some_and(|h| now >= h.until) {
+            *h = None;
+        }
+        h.clone()
+    }
+
+    /// The test pattern asked for, unless it is over.
+    fn live_test(&self, now: Instant) -> Option<TestPattern> {
+        let mut t = self.live.test.lock().unwrap();
+        if t.as_ref().is_some_and(|t| now >= t.until) {
+            *t = None;
+        }
+        t.clone()
     }
 }
 
-/// Opens the area's stream outside of playback and sends `colors(area, t)`
-/// at 50 Hz until `stop()` or `seconds` pass (test pattern, still frame).
-pub async fn stream_for(
-    cfg: &Config,
-    seconds: f32,
-    stop: impl Fn() -> bool,
-    mut colors: impl FnMut(&Area, f32) -> Vec<(u8, Rgb)>,
-) -> Result<()> {
+/// `lueur test`: the test pattern, without the player.
+pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Result<()> {
     let bridge = Bridge::new(&cfg.hue);
     let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
-    let mut stream = bridge.open_stream(&area.id).await?;
+    let mut lights = Lights::new(HueSink::new(bridge, &area.id), Arc::new(Live::default()));
     let start = Instant::now();
+    let pattern = TestPattern { only, start, until: start + Duration::from_secs_f32(seconds) };
     let mut tick = tokio::time::interval(FRAME);
-    let mut res = Ok(());
-    while start.elapsed().as_secs_f32() < seconds && !stop() {
+    while Instant::now() < pattern.until {
         tick.tick().await;
-        if let Err(e) = stream.send(&colors(&area, start.elapsed().as_secs_f32())) {
-            res = Err(e);
-            break;
-        }
+        let now = Instant::now();
+        lights.show(now, Some(&pattern.colors(&area.channels, now))).await;
     }
-    stream.close();
-    bridge.set_streaming(&area.id, false).await?;
-    res
-}
-
-/// Test pattern: a rainbow rotating across the area's channels, or with
-/// `only`, that channel blinking white and the others off (to find a light).
-pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Result<()> {
-    stream_for(
-        cfg,
-        seconds,
-        || false,
-        |area, t| {
-            let n = area.channels.len().max(1) as f32;
-            area.channels
-                .iter()
-                .enumerate()
-                .map(|(i, ch)| match only {
-                    Some(id) if id == ch.channel_id && t.fract() < 0.6 => (id, [1.0; 3]),
-                    Some(_) => (ch.channel_id, [0.0; 3]),
-                    None => (ch.channel_id, hue_to_rgb(t * 0.25 + i as f32 / n)),
-                })
-                .collect()
-        },
-    )
-    .await
+    lights.close().await;
+    Ok(())
 }
 
 fn hue_to_rgb(h: f32) -> Rgb {

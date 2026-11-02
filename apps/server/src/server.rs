@@ -4,9 +4,8 @@
 use crate::config::Config;
 use crate::hue::{self, Bridge};
 use crate::jellyfin::Jellyfin;
-use crate::player::{self, Live, Player, Status};
+use crate::player::{Hold, Live, Player, Status, TestPattern};
 use crate::queue::{self, Queue};
-use crate::render::Renderer;
 use crate::track;
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, Uri, header};
@@ -18,7 +17,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
@@ -31,9 +30,6 @@ struct App {
     reload: Notify,
     stopping: AtomicBool,
     last_scan: Mutex<Option<LastScan>>,
-    hold: Mutex<Option<Hold>>,
-    /// A still frame is being streamed.
-    holding: AtomicBool,
     /// Barcodes by track file, with the track's modification time.
     barcodes: Mutex<std::collections::HashMap<PathBuf, Barcode>>,
 }
@@ -123,8 +119,6 @@ pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> 
         reload: Notify::new(),
         stopping: AtomicBool::new(false),
         last_scan: Mutex::new(None),
-        hold: Mutex::new(None),
-        holding: AtomicBool::new(false),
         barcodes: Default::default(),
     });
     let sup = tokio::spawn(supervise(app.clone()));
@@ -252,7 +246,7 @@ async fn patch_config(State(app): State<Arc<App>>, Json(patch): Json<Value>) -> 
 async fn status(State(app): State<Arc<App>>) -> Res {
     let player = app.live.status.lock().unwrap().clone();
     let last_scan = app.last_scan.lock().unwrap().clone();
-    let hold = app.hold.lock().unwrap().clone();
+    let hold = app.live.hold.lock().unwrap().clone();
     Ok(Json(json!({ "player": player, "queue": app.queue.snapshot(), "last_scan": last_scan, "hold": hold })))
 }
 
@@ -300,20 +294,14 @@ struct TestReq {
     channel: Option<u8>,
 }
 
+/// Asks the player for the test pattern; a film playing takes precedence.
 async fn test(State(app): State<Arc<App>>, body: Option<Json<TestReq>>) -> Res {
     let Json(r) = body.unwrap_or_default();
-    if app.live.status.lock().unwrap().streaming {
-        return Err(ApiError(StatusCode::CONFLICT, "a film is playing".into()));
-    }
-    app.bridge()?;
-    let cfg = app.config();
-    // ponytail: no lock against the player, a film starting during the 6 s test fights over the stream.
-    tokio::spawn(async move {
-        let seconds = if r.channel.is_some() { 3.0 } else { 6.0 };
-        if let Err(e) = player::test_pattern(&cfg, seconds, r.channel).await {
-            warn!("test pattern: {e:#}");
-        }
-    });
+    app.lights_free()?;
+    let start = Instant::now();
+    let seconds = if r.channel.is_some() { 3 } else { 6 };
+    *app.live.test.lock().unwrap() =
+        Some(TestPattern { only: r.channel, start, until: start + Duration::from_secs(seconds) });
     Ok(Json(json!({})))
 }
 
@@ -477,8 +465,17 @@ impl App {
         Ok(())
     }
 
-    fn film_playing(&self) -> bool {
-        self.live.status.lock().unwrap().playing.as_ref().is_some_and(|p| p.has_track && !p.paused)
+    /// The player shows a still frame or the test pattern only when it runs
+    /// and no film is playing.
+    fn lights_free(&self) -> Result<(), ApiError> {
+        let st = self.live.status.lock().unwrap();
+        if st.channels.is_empty() {
+            return Err(bad(st.error.clone().unwrap_or_else(|| "the lights aren't ready yet".into())));
+        }
+        if st.playing.as_ref().is_some_and(|p| p.has_track && !p.paused) {
+            return Err(ApiError(StatusCode::CONFLICT, "a film is playing".into()));
+        }
+        Ok(())
     }
 }
 
@@ -536,64 +533,27 @@ async fn barcode(State(app): State<Arc<App>>, Query(q): Query<BarcodeQuery>) -> 
     Ok(([(header::CACHE_CONTROL, "max-age=86400")], Json(hex)).into_response())
 }
 
-/// A moment of a video shown on the lights, to tune the Look in front of them.
-#[derive(Clone, Deserialize, Serialize)]
-struct Hold {
+#[derive(Deserialize)]
+struct HoldReq {
     path: PathBuf,
     t: f64,
 }
 
-/// Holds a frame on the lights (or moves the held frame) until DELETE, a
+/// Holds a moment of a video on the lights (or moves it) until DELETE, a
 /// film starting, or 10 minutes.
-async fn put_hold(State(app): State<Arc<App>>, Json(h): Json<Hold>) -> Res {
-    app.library_video(&h.path)?;
-    if !track::is_fresh(&app.config().store, &h.path) {
+async fn put_hold(State(app): State<Arc<App>>, Json(r): Json<HoldReq>) -> Res {
+    app.library_video(&r.path)?;
+    if !track::is_fresh(&app.config().store, &r.path) {
         return Err(bad("analyze this video first"));
     }
-    if app.film_playing() {
-        return Err(ApiError(StatusCode::CONFLICT, "a film is playing".into()));
-    }
-    app.bridge()?;
-    *app.hold.lock().unwrap() = Some(h);
-    if app.holding.swap(true, Ordering::SeqCst) {
-        return Ok(Json(json!({})));
-    }
-    let app = app.clone();
-    tokio::spawn(async move {
-        let cfg = app.config();
-        let mut cache: Option<(PathBuf, track::Track)> = None;
-        let mut renderer: Option<Renderer> = None;
-        let mut last = 0.0;
-        let stop = || app.hold.lock().unwrap().is_none() || app.film_playing();
-        let res = player::stream_for(&cfg, 600.0, stop, |area, now| {
-            let Some(h) = app.hold.lock().unwrap().clone() else { return vec![] };
-            if cache.as_ref().is_none_or(|c| c.0 != h.path) {
-                match track::Track::load(&track::track_path(&cfg.store, &h.path)) {
-                    Ok(t) => cache = Some((h.path.clone(), t)),
-                    Err(_) => return vec![],
-                }
-            }
-            let look = app.live.look.lock().unwrap().clone();
-            // Same rendering as a film: moving the slider fades like a cut does.
-            let r = renderer.get_or_insert_with(|| Renderer::new(&area.channels));
-            let colors = r.colors(&cache.as_ref().unwrap().1, h.t, &look, now - last).to_vec();
-            last = now;
-            app.live.set_streaming(true, &colors);
-            colors
-        })
-        .await;
-        if let Err(e) = res {
-            warn!("still frame: {e:#}");
-        }
-        *app.hold.lock().unwrap() = None;
-        app.live.set_streaming(false, &[]);
-        app.holding.store(false, Ordering::SeqCst);
-    });
+    app.lights_free()?;
+    let until = Instant::now() + Duration::from_secs(600);
+    *app.live.hold.lock().unwrap() = Some(Hold { path: r.path, t: r.t, until });
     Ok(Json(json!({})))
 }
 
 async fn delete_hold(State(app): State<Arc<App>>) -> Res {
-    *app.hold.lock().unwrap() = None;
+    *app.live.hold.lock().unwrap() = None;
     Ok(Json(json!({})))
 }
 
