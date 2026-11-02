@@ -316,3 +316,36 @@ export function RunningAnalysis({ name, progress, cpu }: { name: string; progres
     </>
   );
 }
+
+/** A row of mutually exclusive choices. */
+export function Segmented<T extends string | number>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1 rounded-lg border border-white/10 p-0.5" role="radiogroup" aria-label={label}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          onClick={() => onChange(o.value)}
+          className={cx(
+            "h-7 flex-auto rounded-md px-2.5 text-xs font-medium whitespace-nowrap tabular-nums transition",
+            value === o.value ? "bg-white/10 text-zinc-50" : "text-zinc-500 hover:text-zinc-200",
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}

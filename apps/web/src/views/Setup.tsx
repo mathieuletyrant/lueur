@@ -3,6 +3,7 @@ import { ArrowRight, Check, Film, FolderOpen, Library, Lightbulb, Loader2, Refre
 import { api, useLoad, type Library as Lib } from "../api";
 import { setupSteps, useApp } from "../App";
 import { AreaView } from "../components/AreaView";
+import { AnalysisSettings } from "./Analysis";
 import { FolderPicker } from "../components/FolderPicker";
 import { Alert, Button, Card, cx, Field, Input, PageHeader, Pill, Select, Toggle } from "../ui";
 
@@ -11,13 +12,16 @@ export function Setup() {
   const s = setupSteps(cfg, status);
   return (
     <div>
-      <PageHeader title="Setup" subtitle="Connect your Hue bridge and Jellyfin, then tell lueur where your films are." />
+      <PageHeader title="Settings" subtitle="Connect your Hue bridge and Jellyfin, tell lueur where your films are, and how to analyze them." />
       <ol className="space-y-4">
         <BridgeStep done={s.bridge} />
         <AreaStep done={s.area} locked={!s.bridge} />
         <JellyfinStep done={s.jellyfin} />
         <LibrariesStep done={s.libraries} locked={!s.jellyfin} />
       </ol>
+      <div className="mt-8">
+        <AnalysisSettings />
+      </div>
     </div>
   );
 }
@@ -507,7 +511,7 @@ function LibrariesStep({ done, locked }: { done: boolean; locked: boolean }) {
 
       {jf.data && jf.data.length > 0 && (
         <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-white/[0.06] pt-5">
-          <p className="text-xs text-zinc-500">Automatic scans and analysis are set in Library.</p>
+          <p className="text-xs text-zinc-500">How and when they are analyzed: see Analysis below.</p>
           <Button variant="primary" onClick={save} loading={saving} disabled={!dirty}>
             Save libraries
           </Button>

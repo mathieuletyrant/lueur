@@ -1,17 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Clock, Film, FolderSearch, Library, Loader2, RotateCcw, ScanLine, Search, Square } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock, Film, Library, Loader2, RotateCcw, ScanLine, Search, Settings2, Square } from "lucide-react";
 import { api, useLoad, type Video } from "../api";
 import { useApp } from "../App";
-import { Alert, Button, Card, CardHeader, cx, Empty, Input, PageHeader, Pill, Progress, RunningAnalysis, Select, SwitchRow, Toggle } from "../ui";
+import { analysisSummary, hh, toLocal } from "./Analysis";
+import { Alert, Button, Card, CardHeader, Empty, Input, PageHeader, Pill, Progress, RunningAnalysis, Toggle } from "../ui";
 
 export function LibraryView() {
-  const { cfg, status, patch, go } = useApp();
+  const { cfg, status, go } = useApp();
   const libs = useLoad(api.libraries);
   const [scanning, setScanning] = useState(false);
   const [note, setNote] = useState<string>();
   const [error, setError] = useState<string>();
   const q = status?.queue;
   const busy = !!q && (q.running.length > 0 || q.pending > 0);
+  const openSettings = () => {
+    go("setup");
+    setTimeout(() => document.getElementById("analysis")?.scrollIntoView({ behavior: "smooth" }), 50);
+  };
 
   // Refresh the counts each time an Analysis finishes.
   const done = useRef(q?.done);
@@ -102,8 +107,8 @@ export function LibraryView() {
         </div>
       )}
 
-      <div className="mt-8 grid gap-5 lg:grid-cols-5">
-        <Card className="lg:col-span-3">
+      <div className="mt-8">
+        <Card>
           <CardHeader
             title="Queue"
             subtitle={
@@ -114,23 +119,9 @@ export function LibraryView() {
                 : undefined
             }
             action={
-              <div className="flex items-center gap-2 text-xs text-zinc-500">
-                Parallel
-                <div className="flex rounded-lg border border-white/10 p-0.5">
-                  {[1, 2, 3, 4].map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => patch({ jobs: n })}
-                      className={cx(
-                        "h-6 w-7 rounded-md text-xs font-medium tabular-nums transition",
-                        (cfg.jobs || 1) === n ? "bg-white/10 text-zinc-50" : "text-zinc-500 hover:text-zinc-200",
-                      )}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <Button variant="ghost" className="h-8 px-2.5 text-xs" onClick={openSettings} icon={<Settings2 className="size-3.5" />}>
+                {analysisSummary(cfg)}
+              </Button>
             }
           />
           <div className="px-5 pt-3 pb-5">
@@ -152,14 +143,12 @@ export function LibraryView() {
                 )}
               </ul>
             ) : (
-              <Empty icon={<FolderSearch className="size-4" />} title="Nothing in the queue">
-                “Analyze missing” queues every film and episode without a color track.
-              </Empty>
+              <p className="py-2 text-sm text-zinc-500">
+                Nothing in the queue. “Analyze missing” queues every film and episode without a color track.
+              </p>
             )}
           </div>
         </Card>
-
-        <Automation />
       </div>
 
       {!!q?.failed.length && (
@@ -177,186 +166,6 @@ export function LibraryView() {
       )}
 
       {cfg.libraries.length > 0 && <Media />}
-    </div>
-  );
-}
-
-const INTERVALS = [
-  { m: 0, label: "Off" },
-  { m: 5, label: "5 min" },
-  { m: 15, label: "15 min" },
-  { m: 60, label: "1 h" },
-  { m: 360, label: "6 h" },
-];
-
-function ago(unix: number) {
-  const s = Math.max(0, Date.now() / 1000 - unix);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  return `${Math.floor(s / 3600)} h ago`;
-}
-
-/** When lueur analyzes on its own. */
-function Automation() {
-  const { cfg, status, patch } = useApp();
-  const last = status?.last_scan;
-  return (
-    <Card className="lg:col-span-2">
-      <CardHeader title="Automation" subtitle="New films get their track without you asking." />
-      <div className="space-y-5 px-5 pt-4 pb-5">
-        <div>
-          <p className="text-sm font-medium">Auto scan</p>
-          <p className="mt-0.5 text-xs text-zinc-500">Looks for new videos in your libraries.</p>
-          <div className="mt-3 flex rounded-lg border border-white/10 p-0.5" role="radiogroup" aria-label="Auto scan interval">
-            {INTERVALS.map(({ m, label }) => (
-              <button
-                key={m}
-                role="radio"
-                aria-checked={cfg.auto_scan_minutes === m}
-                onClick={() => patch({ auto_scan_minutes: m })}
-                className={cx(
-                  "h-7 flex-1 rounded-md text-xs font-medium whitespace-nowrap transition",
-                  cfg.auto_scan_minutes === m ? "bg-white/10 text-zinc-50" : "text-zinc-500 hover:text-zinc-200",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {last && (
-            <p className="mt-2 text-xs text-zinc-500">
-              Last {last.auto ? "auto " : ""}scan {ago(last.at)}: {last.queued} queued
-              {last.removed > 0 && `, ${last.removed} old track${last.removed > 1 ? "s" : ""} removed`}
-            </p>
-          )}
-        </div>
-        <Speed />
-        <AnalysisWindow />
-        <Exclude />
-        <SwitchRow
-          className="border-t border-white/[0.06] pt-5"
-          label="Analyze on first playback"
-          hint="A film played without a track is analyzed first; the lights join in when it is done."
-          checked={cfg.auto_analyze}
-          onChange={(v) => patch({ auto_analyze: v })}
-        />
-      </div>
-    </Card>
-  );
-}
-
-const SPEEDS = [
-  { x: 5, label: "Gentle", hint: "5× real time: a 2-hour film in about 25 min. Quiet and cool, for daytime." },
-  { x: 10, label: "Normal", hint: "10× real time: a 2-hour film in about 12 min." },
-  { x: 25, label: "Fast", hint: "25× real time: a 2-hour film in about 5 min. The server warms up." },
-  { x: 0, label: "Hurt my GPU", hint: "As fast as the GPU goes. Great for a first run at night, hot otherwise." },
-];
-
-/** How hard analyses may work, like Plex's transcoder preference. */
-function Speed() {
-  const { cfg, patch } = useApp();
-  const current = SPEEDS.find((s) => s.x === cfg.analysis.max_speed);
-  return (
-    <div className="border-t border-white/[0.06] pt-5">
-      <p className="text-sm font-medium">Analysis speed</p>
-      <div className="mt-3 flex flex-wrap gap-1 rounded-lg border border-white/10 p-0.5" role="radiogroup" aria-label="Analysis speed">
-        {SPEEDS.map((s) => (
-          <button
-            key={s.x}
-            role="radio"
-            aria-checked={cfg.analysis.max_speed === s.x}
-            onClick={() => patch({ analysis: { max_speed: s.x } })}
-            className={cx(
-              "h-7 flex-auto rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition",
-              cfg.analysis.max_speed === s.x ? "bg-white/10 text-zinc-50" : "text-zinc-500 hover:text-zinc-200",
-            )}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
-      <p className="mt-2 text-xs text-zinc-500">{current?.hint ?? `${cfg.analysis.max_speed}× real time.`}</p>
-    </div>
-  );
-}
-
-// The server keeps the window in UTC minutes; the page shows local hours.
-const offset = new Date().getTimezoneOffset();
-const toUtc = (localHour: number) => (((localHour * 60 + offset) % 1440) + 1440) % 1440;
-const toLocal = (utcMin: number) => Math.floor(((((utcMin - offset) % 1440) + 1440) % 1440) / 60);
-const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
-
-/** Analyze only during some hours (a film you ask for or play starts anyway). */
-function AnalysisWindow() {
-  const { cfg, patch } = useApp();
-  const w = cfg.analysis.window;
-  const [start, end] = w ? [toLocal(w.start), toLocal(w.end)] : [1, 7];
-  const save = (s: number, e: number) => patch({ analysis: { window: { start: toUtc(s), end: toUtc(e) } } });
-  const hours = Array.from({ length: 24 }, (_, h) => h);
-  return (
-    <div className="space-y-3 border-t border-white/[0.06] pt-5">
-      <SwitchRow
-        label="Only at certain hours"
-        hint="Outside these hours, new videos wait. A film you play or ask to analyze starts anyway."
-        checked={!!w}
-        onChange={(on) => (on ? save(start, end) : patch({ analysis: { window: null } }))}
-      />
-      {w && (
-        <div className="flex items-center gap-2 text-sm text-zinc-400">
-          From
-          <Select value={start} onChange={(e) => save(Number(e.target.value), end)} className="w-24" aria-label="Start">
-            {hours.map((h) => <option key={h} value={h}>{hh(h)}</option>)}
-          </Select>
-          to
-          <Select value={end} onChange={(e) => save(start, Number(e.target.value))} className="w-24" aria-label="End">
-            {hours.map((h) => <option key={h} value={h}>{hh(h)}</option>)}
-          </Select>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Keywords that keep files (trailers, samples, extras…) out of every analysis. */
-function Exclude() {
-  const { cfg, patch } = useApp();
-  const [draft, setDraft] = useState("");
-  const save = (exclude: string[]) => patch({ exclude });
-  const add = () => {
-    const k = draft.trim();
-    if (k && !cfg.exclude.includes(k)) save([...cfg.exclude, k]);
-    setDraft("");
-  };
-  return (
-    <div className="border-t border-white/[0.06] pt-5">
-      <p className="text-sm font-medium">Skip files containing</p>
-      <p className="mt-0.5 text-xs text-zinc-500">Matched anywhere in the path, ignoring case. Their tracks are removed.</p>
-      <ul className="mt-3 flex flex-wrap gap-1.5">
-        {cfg.exclude.map((k) => (
-          <li key={k} className="flex items-center gap-1 rounded-md bg-white/[0.06] py-0.5 pr-1 pl-2 font-mono text-xs text-zinc-300 ring-1 ring-white/10 ring-inset">
-            {k}
-            <button
-              onClick={() => save(cfg.exclude.filter((x) => x !== k))}
-              className="rounded px-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-100"
-              aria-label={`Stop skipping ${k}`}
-            >
-              ×
-            </button>
-          </li>
-        ))}
-      </ul>
-      <form
-        className="mt-2 flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          add();
-        }}
-      >
-        <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="-trailer, /extras/…" className="h-8 font-mono text-xs" />
-        <Button type="submit" className="h-8 px-3 text-xs" disabled={!draft.trim()}>
-          Add
-        </Button>
-      </form>
     </div>
   );
 }

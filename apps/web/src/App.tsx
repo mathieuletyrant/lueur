@@ -21,7 +21,7 @@ const views = {
   now: { label: "Now", icon: Clapperboard },
   library: { label: "Library", icon: Library },
   look: { label: "Look", icon: SlidersHorizontal },
-  setup: { label: "Setup", icon: Settings2 },
+  setup: { label: "Settings", icon: Settings2 },
 } as const;
 export type View = keyof typeof views;
 
