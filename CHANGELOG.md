@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.14.0](https://github.com/mathieuletyrant/lueur/compare/v0.13.2...v0.14.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **web:** cinema look: the playing film's frame in scope format, ambilight glow, film stills, serif titles, grain ([3d12565](https://github.com/mathieuletyrant/lueur/commit/3d1256516b637925bf99ce2e44ad1ae9edaf0866))
+* **web:** installable as an app (manifest, home screen icons) ([b236cd4](https://github.com/mathieuletyrant/lueur/commit/b236cd46c37ea96d124e281fb07a2883ccb5299c))
+
+
+### 🐛 Fixes
+
+* **web:** lockfile for the Instrument Serif font ([2acdd61](https://github.com/mathieuletyrant/lueur/commit/2acdd61bcf47360aebd9f819b00801120b9022a2))
+
 ## [0.13.2](https://github.com/mathieuletyrant/lueur/compare/v0.13.1...v0.13.2) (2026-11-02)
 
 
