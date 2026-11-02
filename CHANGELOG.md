@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/mathieuletyrant/lueur/compare/v0.8.0...v0.8.1) (2026-11-02)
+
+
+### ⚡ Performance
+
+* **analyze:** skip non-reference frames when decoding ([480ce46](https://github.com/mathieuletyrant/lueur/commit/480ce468891c17b0c1c6e77987a9805c742a3c5d))
+
 ## [0.8.0](https://github.com/mathieuletyrant/lueur/compare/v0.7.0...v0.8.0) (2026-11-02)
 
 
