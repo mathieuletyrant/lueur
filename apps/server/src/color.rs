@@ -47,11 +47,24 @@ pub struct Look {
     /// Offset added to the Jellyfin position, in milliseconds
     /// (positive = the lights run further ahead in the film).
     pub offset_ms: f64,
+    /// Width of the screen zone each light reads (1.0 = default, larger = calmer, more uniform).
+    pub spread: f32,
+    /// Stretch the lights' positions to the area's extent, so lights grouped
+    /// around the TV still read the screen's edges.
+    pub fit_area: bool,
 }
 
 impl Default for Look {
     fn default() -> Self {
-        Self { brightness: 1.0, saturation: 1.15, min_brightness: 0.0, smoothing_ms: 60.0, offset_ms: 0.0 }
+        Self {
+            brightness: 1.0,
+            saturation: 1.15,
+            min_brightness: 0.0,
+            smoothing_ms: 60.0,
+            offset_ms: 0.0,
+            spread: 1.0,
+            fit_area: true,
+        }
     }
 }
 

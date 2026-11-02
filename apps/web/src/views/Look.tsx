@@ -2,17 +2,27 @@ import { useEffect, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import type { Look } from "../api";
 import { useApp } from "../App";
-import { Alert, Button, Card, CardHeader, PageHeader, rgb } from "../ui";
+import { Alert, Button, Card, CardHeader, PageHeader, rgb, Toggle } from "../ui";
 
-const DEFAULT: Look = { brightness: 1, saturation: 1.15, min_brightness: 0, smoothing_ms: 60, offset_ms: 0 };
+const DEFAULT: Look = {
+  brightness: 1,
+  saturation: 1.15,
+  min_brightness: 0,
+  smoothing_ms: 60,
+  offset_ms: 0,
+  spread: 1,
+  fit_area: true,
+};
 
-type Spec = { key: keyof Look; label: string; hint: string; min: number; max: number; step: number; fmt: (v: number) => string };
+type NumKey = Exclude<keyof Look, "fit_area">;
+type Spec = { key: NumKey; label: string; hint: string; min: number; max: number; step: number; fmt: (v: number) => string };
 
 const specs: Spec[] = [
   { key: "brightness", label: "Brightness", hint: "Multiplies every color.", min: 0.1, max: 2, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: "saturation", label: "Saturation", hint: "Above 100% makes colors pop, below washes them out.", min: 0, max: 2, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: "min_brightness", label: "Minimum brightness", hint: "Keeps a soft light during dark scenes instead of going black.", min: 0, max: 0.3, step: 0.01, fmt: (v) => (v ? `${Math.round(v * 100)}%` : "Off") },
   { key: "smoothing_ms", label: "Smoothing", hint: "Higher is calmer, lower follows cuts more sharply.", min: 0, max: 500, step: 10, fmt: (v) => (v ? `${v} ms` : "Off") },
+  { key: "spread", label: "Spread", hint: "How much of the screen each light reads. Lower: each light more distinct. Higher: calmer, closer colors.", min: 0.4, max: 3, step: 0.1, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: "offset_ms", label: "Sync offset", hint: "Lights change late on cuts? Increase it. Early? Decrease it.", min: -2000, max: 2000, step: 50, fmt: (v) => `${v > 0 ? "+" : ""}${v} ms` },
 ];
 
@@ -60,7 +70,9 @@ export function LookView() {
     );
   };
 
-  const changed = (Object.keys(DEFAULT) as (keyof Look)[]).some((k) => Math.abs(look[k] - DEFAULT[k]) > 1e-4); // f32 on the server side
+  const changed =
+    look.fit_area !== DEFAULT.fit_area ||
+    specs.some(({ key }) => Math.abs(look[key] - DEFAULT[key]) > 1e-4); // f32 on the server side
 
   return (
     <div>
@@ -102,6 +114,16 @@ export function LookView() {
                 </div>
               );
             })}
+            <label className="flex items-start justify-between gap-4 px-5 py-5">
+              <span>
+                <span className="block text-sm font-medium">Fit to area</span>
+                <span className="mt-1 block text-xs text-zinc-500">
+                  Stretches the lights' positions so the outermost ones read the screen's edges. Turn it off if your lights
+                  are placed far apart in the Hue app already.
+                </span>
+              </span>
+              <Toggle label="Fit to area" checked={look.fit_area} onChange={(v) => set({ ...look, fit_area: v })} />
+            </label>
           </div>
         </Card>
 

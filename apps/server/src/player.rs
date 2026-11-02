@@ -23,6 +23,8 @@ const RETRY_TRACK: Duration = Duration::from_secs(5);
 /// For each Hue channel, the grid cells that light it and their weights.
 pub struct Mapping {
     channels: Vec<(u8, Vec<(usize, f32)>)>,
+    /// The Look settings it was built with (spread, fit_area).
+    made_for: (f32, bool),
 }
 
 impl Mapping {
@@ -30,12 +32,15 @@ impl Mapping {
     /// Positions are stretched to the area's extent: lights (or the segments
     /// of a gradient strip) grouped around the TV still reach the screen's
     /// edges. Each channel takes a Gaussian average of the screen near its edge.
-    pub fn new(channels: &[Channel], cols: u8, rows: u8) -> Self {
+    pub fn new(channels: &[Channel], cols: u8, rows: u8, look: &Look) -> Self {
         let (cols, rows) = (cols as usize, rows as usize);
+        let (spread, fit_area) = (look.spread.clamp(0.2, 5.0), look.fit_area);
         let fit = |vals: Vec<f32>| {
             let (lo, hi) = vals.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
             // All on one line (a single row of lights): keep Hue's own scale.
-            move |v: f32| if hi - lo > 0.2 { (v - lo) / (hi - lo) } else { ((v + 1.0) / 2.0).clamp(0.0, 1.0) }
+            move |v: f32| {
+                if fit_area && hi - lo > 0.2 { (v - lo) / (hi - lo) } else { ((v + 1.0) / 2.0).clamp(0.0, 1.0) }
+            }
         };
         let fx = fit(channels.iter().map(|c| c.position.x).collect());
         let fz = fit(channels.iter().map(|c| c.position.z).collect());
@@ -50,8 +55,7 @@ impl Mapping {
                     for c in 0..cols {
                         let cu = (c as f32 + 0.5) / cols as f32;
                         let cv = (r as f32 + 0.5) / rows as f32;
-                        // ponytail: fixed spread, a Look setting if some setups want wider/narrower.
-                        let d = ((cu - u) / 0.15).powi(2) + ((cv - v) / 0.18).powi(2);
+                        let d = ((cu - u) / (0.15 * spread)).powi(2) + ((cv - v) / (0.18 * spread)).powi(2);
                         let k = (-0.5 * d).exp();
                         if k > 0.01 {
                             w.push((r * cols + c, k));
@@ -63,7 +67,11 @@ impl Mapping {
                 (ch.channel_id, w)
             })
             .collect();
-        Self { channels }
+        Self { channels, made_for: (look.spread, look.fit_area) }
+    }
+
+    fn made_for(&self, look: &Look) -> bool {
+        self.made_for == (look.spread, look.fit_area)
     }
 
     pub fn colors(&self, grid: &[Rgb], out: &mut Vec<(u8, Rgb)>) {
@@ -296,7 +304,9 @@ impl Player {
                             info!("playing: \"{}\" on {}", np.name, np.device);
                             let t = self.load_track(np);
                             let (cols, rows) = t.as_ref().map(|t| (t.cols, t.rows)).unwrap_or((16, 9));
-                            current = Some((np.item_id.clone(), t, Mapping::new(&self.area.channels, cols, rows)));
+                            let look = self.live.look.lock().unwrap().clone();
+                            current =
+                                Some((np.item_id.clone(), t, Mapping::new(&self.area.channels, cols, rows, &look)));
                         }
                         if let ClockEvent::Jump = clock.update(np) {
                             tracing::debug!("clock re-synced to {:.2} s", np.position);
@@ -327,13 +337,22 @@ impl Player {
                 retry_track_at = now + RETRY_TRACK;
                 let np = rx.borrow().clone().filter(|np| np.item_id == c.0);
                 if let Some(t) = np.and_then(|np| self.find_track(&np)) {
-                    c.2 = Mapping::new(&self.area.channels, t.cols, t.rows);
+                    c.2 = Mapping::new(&self.area.channels, t.cols, t.rows, &self.live.look.lock().unwrap());
                     if let Some(p) = self.status().playing.as_mut() {
                         p.has_track = true;
                         p.duration = Some(t.duration());
                     }
                     c.1 = Some(t);
                 }
+            }
+
+            // The Look changes live; spread and fit_area need a new mapping.
+            let look = self.live.look.lock().unwrap().clone();
+            if let Some(c) = current.as_mut()
+                && !c.2.made_for(&look)
+            {
+                let (cols, rows) = c.1.as_ref().map(|t| (t.cols, t.rows)).unwrap_or((16, 9));
+                c.2 = Mapping::new(&self.area.channels, cols, rows, &look);
             }
 
             let playable = current.as_ref().and_then(|(_, t, m)| t.clone().map(|t| (t, m)));
@@ -366,7 +385,7 @@ impl Player {
 
             let (track, mapping) = playable.unwrap();
             let Some(pos) = clock.now() else { continue };
-            let look = &self.live.look.lock().unwrap().clone();
+            let look = &look;
             track.sample(pos + look.offset_ms / 1000.0, &mut grid);
             mapping.colors(&grid, &mut colors);
             for c in colors.iter_mut() {
@@ -467,6 +486,7 @@ mod tests {
             &[ch(0, -0.37, -0.47), ch(1, -0.37, -0.1), ch(2, -0.37, 0.27), ch(3, 0.0, 0.27), ch(6, 0.37, -0.47)],
             16,
             9,
+            &Look::default(),
         );
         // Screen: top third red, the rest blue on the left half and green on the right half.
         let grid: Vec<Rgb> = (0..16 * 9)
@@ -483,12 +503,18 @@ mod tests {
         assert!(c(2)[0] > 0.6, "top left is mostly red: {:?}", c(2));
         assert!(c(3)[0] > 0.8, "top center is red: {:?}", c(3));
         assert!(c(6)[1] > 0.9, "bottom right is green: {:?}", c(6));
+
+        // Without fit_area, the same segments read close to the center: much less contrast.
+        let look = Look { fit_area: false, ..Look::default() };
+        let m = Mapping::new(&[ch(0, -0.37, -0.47)], 16, 9, &look);
+        m.colors(&grid, &mut out);
+        assert!(out[0].1[2] < 0.9, "{:?}", out[0]);
     }
 
     #[test]
     fn left_light_sees_left_of_screen() {
         let ch = |id, x| Channel { channel_id: id, position: Position { x, y: 0.8, z: 0.0 } };
-        let m = Mapping::new(&[ch(0, -1.0), ch(1, 1.0)], 16, 9);
+        let m = Mapping::new(&[ch(0, -1.0), ch(1, 1.0)], 16, 9, &Look::default());
         // Grid: left half red, right half blue.
         let grid: Vec<Rgb> = (0..16 * 9).map(|i| if i % 16 < 8 { [1.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] }).collect();
         let mut out = Vec::new();

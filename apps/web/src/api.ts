@@ -6,6 +6,8 @@ export type Look = {
   min_brightness: number;
   smoothing_ms: number;
   offset_ms: number;
+  spread: number;
+  fit_area: boolean;
 };
 
 export type Library = { name: string; jellyfin: string; path: string };
