@@ -9,7 +9,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 pub const SAMPLE_W: usize = 96;
@@ -39,6 +39,14 @@ pub struct Options {
     pub threads: u32,
     /// Incremented for every analyzed frame (progress reporting).
     pub progress: Option<Arc<AtomicUsize>>,
+    /// Set to stop the analysis early (it then fails with "stopped").
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+impl Options {
+    fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
+    }
 }
 
 pub struct Stats {
@@ -56,7 +64,7 @@ pub fn analyze(video: &Path, opts: &Options) -> Result<(Track, Stats)> {
     match run(video, opts, hw) {
         Ok(r) => Ok(r),
         // Codec not supported by the GPU (or missing driver): fall back to software.
-        Err(e) if hw != HwAccel::None && opts.hwaccel == HwAccel::Auto => {
+        Err(e) if hw != HwAccel::None && opts.hwaccel == HwAccel::Auto && !opts.cancelled() => {
             tracing::warn!("hardware decoding failed ({e:#}), falling back to software");
             run(video, opts, HwAccel::None)
         }
@@ -142,6 +150,11 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
         grid.compute(&buf, crop, &mut frames);
         if let Some(p) = &opts.progress {
             p.fetch_add(1, Ordering::Relaxed);
+        }
+        if opts.cancelled() {
+            child.kill().ok();
+            child.wait().ok();
+            bail!("stopped");
         }
     }
     let status = child.wait()?;

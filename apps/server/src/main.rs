@@ -71,7 +71,15 @@ enum Cmd {
 }
 
 pub fn analyze_options() -> analyze::Options {
-    analyze::Options { fps: 12.0, cols: 16, rows: 9, hwaccel: analyze::HwAccel::Auto, threads: 0, progress: None }
+    analyze::Options {
+        fps: 12.0,
+        cols: 16,
+        rows: 9,
+        hwaccel: analyze::HwAccel::Auto,
+        threads: 0,
+        progress: None,
+        cancel: None,
+    }
 }
 
 fn cmd_analyze(store: &Path, paths: &[PathBuf], opts: analyze::Options, jobs: usize, force: bool) -> Result<()> {
@@ -172,7 +180,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Test { seconds } => player::test_pattern(&cfg, seconds).await?,
+        Cmd::Test { seconds } => player::test_pattern(&cfg, seconds, None).await?,
         Cmd::Run => {
             let live = Arc::new(player::Live { look: cfg.look.clone().into(), ..Default::default() });
             let q = queue::Queue::new(cfg.store.clone(), analyze_options(), cfg.jobs);

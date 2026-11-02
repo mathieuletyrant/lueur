@@ -4,9 +4,10 @@
 use crate::analyze;
 use crate::track;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use tracing::{info, warn};
 
@@ -38,6 +39,7 @@ struct Job {
     /// Seconds of video, when ffprobe knows it (probed by the job's thread).
     duration: OnceLock<Option<f64>>,
     frames: Arc<AtomicUsize>,
+    cancel: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -101,13 +103,47 @@ impl Queue {
 
     /// Queues a video unless it is already queued or running. Returns whether it was added.
     pub fn push(self: &Arc<Self>, video: PathBuf) -> bool {
+        self.add(video, false)
+    }
+
+    /// Like `push`, but ahead of everything already waiting.
+    pub fn push_front(self: &Arc<Self>, video: PathBuf) -> bool {
+        self.add(video, true)
+    }
+
+    fn add(self: &Arc<Self>, video: PathBuf, front: bool) -> bool {
         let mut s = self.state.lock().unwrap();
-        if s.pending.contains(&video) || s.running.iter().any(|j| j.video == video) {
+        if s.running.iter().any(|j| j.video == video) {
             return false;
         }
-        s.pending.push_back(video);
+        if let Some(i) = s.pending.iter().position(|p| *p == video) {
+            if !front {
+                return false;
+            }
+            s.pending.remove(i);
+        }
+        if front {
+            s.pending.push_front(video);
+        } else {
+            s.pending.push_back(video);
+        }
         self.pump(&mut s);
         true
+    }
+
+    /// Drops everything waiting and stops the running analyses.
+    pub fn stop(&self) {
+        let mut s = self.state.lock().unwrap();
+        s.pending.clear();
+        for j in &s.running {
+            j.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Videos waiting and running.
+    pub fn queued(&self) -> (HashSet<PathBuf>, HashSet<PathBuf>) {
+        let s = self.state.lock().unwrap();
+        (s.pending.iter().cloned().collect(), s.running.iter().map(|j| j.video.clone()).collect())
     }
 
     fn pump(self: &Arc<Self>, s: &mut State) {
@@ -115,7 +151,12 @@ impl Queue {
             let Some(video) = s.pending.pop_front() else {
                 break;
             };
-            let job = Arc::new(Job { video, duration: OnceLock::new(), frames: Default::default() });
+            let job = Arc::new(Job {
+                video,
+                duration: OnceLock::new(),
+                frames: Default::default(),
+                cancel: Default::default(),
+            });
             s.running.push(job.clone());
             let q = self.clone();
             std::thread::spawn(move || q.work(job));
@@ -124,7 +165,11 @@ impl Queue {
 
     fn work(self: Arc<Self>, job: Arc<Job>) {
         job.duration.get_or_init(|| analyze::duration(&job.video));
-        let opts = analyze::Options { progress: Some(job.frames.clone()), ..self.opts.clone() };
+        let opts = analyze::Options {
+            progress: Some(job.frames.clone()),
+            cancel: Some(job.cancel.clone()),
+            ..self.opts.clone()
+        };
         let n = name(&job.video);
         let res = analyze::analyze(&job.video, &opts)
             .and_then(|(t, s)| t.save(&track::track_path(&self.store, &job.video)).map(|_| (t, s)));
@@ -141,6 +186,7 @@ impl Queue {
                     st.hwaccel
                 );
             }
+            Err(_) if job.cancel.load(Ordering::Relaxed) => info!("analysis of {n} stopped"),
             Err(e) => {
                 warn!("analysis failed for {n}: {e:#}");
                 s.failed.push_front(Failed { name: n, error: format!("{e:#}") });
@@ -192,19 +238,23 @@ mod tests {
     #[test]
     fn missing_file_fails_and_queue_goes_idle() {
         let dir = std::env::temp_dir().join(format!("lueur-queue-{}", std::process::id()));
-        let opts = analyze::Options {
-            fps: 12.0,
-            cols: 16,
-            rows: 9,
-            hwaccel: analyze::HwAccel::None,
-            threads: 0,
-            progress: None,
-        };
-        let q = Queue::new(dir, opts, 1);
+        let opts = analyze::Options { hwaccel: analyze::HwAccel::None, ..crate::analyze_options() };
+        let q = Queue::new(dir.clone(), opts.clone(), 1);
         assert!(q.push("/nope/a.mkv".into()));
         q.push("/nope/b.mkv".into());
         q.wait_idle();
         let s = q.snapshot();
         assert_eq!((s.done, s.failed.len(), s.pending), (0, 2, 0));
+
+        // `stop` drops what waits; `push_front` jumps ahead.
+        let q = Queue::new(dir, opts, 1);
+        for f in ["/nope/c.mkv", "/nope/d.mkv", "/nope/e.mkv"] {
+            q.push(f.into());
+        }
+        q.push_front("/nope/f.mkv".into());
+        assert!(q.state.lock().unwrap().pending.front().is_some_and(|p| p.ends_with("f.mkv")));
+        q.stop();
+        assert!(q.queued().0.is_empty());
+        q.wait_idle();
     }
 }

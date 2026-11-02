@@ -110,6 +110,9 @@ pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> 
         .route("/api/jellyfin/libraries", get(jellyfin_libraries))
         .route("/api/libraries", get(libraries))
         .route("/api/scan", post(scan))
+        .route("/api/scan/stop", post(stop))
+        .route("/api/videos", get(videos))
+        .route("/api/analyze", post(analyze))
         .route("/api/fs", get(fs))
         .fallback(web)
         .with_state(app.clone());
@@ -253,7 +256,14 @@ async fn areas(State(app): State<Arc<App>>) -> Res<Vec<hue::Area>> {
     Ok(Json(app.bridge()?.areas().await?))
 }
 
-async fn test(State(app): State<Arc<App>>) -> Res {
+#[derive(Deserialize, Default)]
+struct TestReq {
+    /// Blink this channel only.
+    channel: Option<u8>,
+}
+
+async fn test(State(app): State<Arc<App>>, body: Option<Json<TestReq>>) -> Res {
+    let Json(r) = body.unwrap_or_default();
     if app.live.status.lock().unwrap().streaming {
         return Err(ApiError(StatusCode::CONFLICT, "a film is playing".into()));
     }
@@ -261,7 +271,8 @@ async fn test(State(app): State<Arc<App>>) -> Res {
     let cfg = app.config();
     // ponytail: no lock against the player, a film starting during the 6 s test fights over the stream.
     tokio::spawn(async move {
-        if let Err(e) = player::test_pattern(&cfg, 6.0).await {
+        let seconds = if r.channel.is_some() { 3.0 } else { 6.0 };
+        if let Err(e) = player::test_pattern(&cfg, seconds, r.channel).await {
             warn!("test pattern: {e:#}");
         }
     });
@@ -326,6 +337,74 @@ async fn scan(State(app): State<Arc<App>>) -> Res {
     })
     .await?;
     Ok(Json(json!({ "queued": queued })))
+}
+
+async fn stop(State(app): State<Arc<App>>) -> Res {
+    app.queue.stop();
+    Ok(Json(json!({})))
+}
+
+#[derive(Serialize)]
+struct Video {
+    library: String,
+    name: String,
+    /// Folder inside the Library (the show and season for an episode).
+    folder: String,
+    path: PathBuf,
+    analyzed: bool,
+    /// "running" or "queued".
+    state: Option<&'static str>,
+}
+
+/// Every video of every Library, with its Track and queue state.
+async fn videos(State(app): State<Arc<App>>) -> Res<Vec<Video>> {
+    let cfg = app.config();
+    let (pending, running) = app.queue.queued();
+    let list = tokio::task::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for l in &cfg.libraries {
+            let mut files = Vec::new();
+            queue::collect(&[PathBuf::from(&l.path)], &mut files);
+            out.extend(files.into_iter().map(|f| {
+                Video {
+                    library: l.name.clone(),
+                    name: f.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
+                    folder: f
+                        .parent()
+                        .and_then(|p| p.strip_prefix(&l.path).ok())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    analyzed: track::is_fresh(&cfg.store, &f),
+                    state: if running.contains(&f) {
+                        Some("running")
+                    } else if pending.contains(&f) {
+                        Some("queued")
+                    } else {
+                        None
+                    },
+                    path: f,
+                }
+            }));
+        }
+        out
+    })
+    .await?;
+    Ok(Json(list))
+}
+
+#[derive(Deserialize)]
+struct AnalyzeReq {
+    path: PathBuf,
+}
+
+/// Analyzes one video next, even when its Track is up to date.
+async fn analyze(State(app): State<Arc<App>>, Json(r): Json<AnalyzeReq>) -> Res {
+    // Only files inside a Library: the API has no auth.
+    let inside = app.config().libraries.iter().any(|l| r.path.starts_with(&l.path));
+    if !inside || !r.path.is_file() || r.path.components().any(|c| c == std::path::Component::ParentDir) {
+        return Err(bad("not a video of a Library"));
+    }
+    Ok(Json(json!({ "queued": app.queue.push_front(r.path) })))
 }
 
 #[derive(Deserialize)]

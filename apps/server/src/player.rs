@@ -205,7 +205,7 @@ impl Player {
         }
         if !video.exists() {
             warn!("lueur can't see {}: check the Library folders", video.display());
-        } else if self.cfg.auto_analyze && self.queue.push(video) {
+        } else if self.cfg.auto_analyze && self.queue.push_front(video) {
             info!("analysis queued, the lights will follow on the next playback");
         }
         None
@@ -373,8 +373,9 @@ impl Player {
     }
 }
 
-/// Test pattern: a rainbow rotating across the area's channels.
-pub async fn test_pattern(cfg: &Config, seconds: f32) -> Result<()> {
+/// Test pattern: a rainbow rotating across the area's channels, or with
+/// `only`, that channel blinking white and the others off (to find a light).
+pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Result<()> {
     let creds = Credentials { username: cfg.hue.username.clone(), clientkey: cfg.hue.clientkey.clone() };
     let bridge = Bridge::new(&cfg.hue.bridge, creds.clone(), cfg.hue.base_url.as_deref());
     let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
@@ -393,7 +394,11 @@ pub async fn test_pattern(cfg: &Config, seconds: f32) -> Result<()> {
             .channels
             .iter()
             .enumerate()
-            .map(|(i, ch)| (ch.channel_id, hue_to_rgb(t * 0.25 + i as f32 / n)))
+            .map(|(i, ch)| match only {
+                Some(id) if id == ch.channel_id && t.fract() < 0.6 => (id, [1.0; 3]),
+                Some(_) => (ch.channel_id, [0.0; 3]),
+                None => (ch.channel_id, hue_to_rgb(t * 0.25 + i as f32 / n)),
+            })
             .collect();
         stream.send(&colors)?;
     }
