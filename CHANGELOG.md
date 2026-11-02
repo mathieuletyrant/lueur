@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/mathieuletyrant/lueur/compare/v0.15.0...v0.16.0) (2026-11-02)
+
+
+### ✨ Features
+
+* **lights:** pause switch, films leave the lights alone while off ([dd2ca2f](https://github.com/mathieuletyrant/lueur/commit/dd2ca2f754c91978911b8b7163e6b8694ed872d7))
+
 ## [0.15.0](https://github.com/mathieuletyrant/lueur/compare/v0.14.2...v0.15.0) (2026-11-02)
 
 
