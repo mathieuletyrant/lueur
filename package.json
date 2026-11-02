@@ -1,6 +1,6 @@
 {
   "name": "lueur",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "private": true,
   "scripts": {
     "dev": "pnpm --filter web dev",
