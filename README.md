@@ -72,7 +72,7 @@ Open http://localhost:8080 and follow **Setup**, then **Library → Scan now**.
 |---|---|---|
 | `LUEUR_CONFIG` | `/data/lueur.json` | Config written by the UI; the tracks go to `tracks/` next to it |
 | `LUEUR_PORT` | `8080` | |
-| `RUST_LOG` | `lueur=info` | `lueur=debug` adds clock re-syncs |
+| `RUST_LOG` | `lueur=info` | See [Debugging the lights](#-debugging-the-lights); `lueur=debug` adds every playback report |
 
 The image is amd64, tagged `latest`, `x.y` and `x.y.z`. `--device /dev/dri` is optional: without a GPU, the analysis runs on the CPU.
 
@@ -95,6 +95,20 @@ The image is amd64, tagged `latest`, `x.y` and `x.y.z`. `--device /dev/dri` is o
 3. Lights late or early on cuts? Use **Sync offset** on the Now page (±0.1 s buttons).
 
 <img src="docs/screenshots/look.jpg" alt="Look: test on a frame of a film, intensity presets and the sliders" />
+
+## 🔎 Debugging the lights
+
+While a film plays, the logs (`docker logs lueur`) tell what the lights did:
+
+| Line | Means |
+|---|---|
+| `look: Look { … }, measured exposure ×1.40` | The Look in use, at each film's start and whenever it changes |
+| `clock started at 12:34 from Apple TV's report` | Playback picked up: a new film, a pause or a resume |
+| `clock jumped +0.92 s to 12:34` | The app's report was off by more than 0.75 s: the lights moved in the film at once |
+| `clock off by +0.31 s at 12:34, corrected gently` | Off by 0.1 to 0.75 s: a fifth of it is corrected |
+| `lights step 0.82 → 0.10 in 0.30 s at 12:34.5; picture 0.61 → 0.05; no clock jump` | The brightest light changed by 0.3 or more within 0.3 s (0 is black, 1 full; perceptual), next to the picture's own change. A step with a calm picture or right after a clock jump is a sync problem; with the picture changing as much, it is a cut |
+| `frame loop stalled 0.40 s` | The lights froze, then caught up |
+| `minute 12:00–13:00: …` | Every minute: the lights' average and range, steps, how often the app's position moved, clock jumps and nudges, stalls |
 
 ## 🛠️ Develop
 

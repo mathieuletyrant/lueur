@@ -33,7 +33,7 @@ pub fn luminance(c: Rgb) -> f32 {
 }
 
 /// Settings applied to colors before they are sent to the bridge.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct Look {
     /// Brightness multiplier (1.0 = unchanged).
