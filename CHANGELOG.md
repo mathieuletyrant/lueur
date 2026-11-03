@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/mathieuletyrant/lueur/compare/v0.17.0...v0.18.0) (2026-11-03)
+
+
+### ✨ Features
+
+* **player:** diagnostics in the logs while a film plays ([#26](https://github.com/mathieuletyrant/lueur/issues/26)) ([8d6117a](https://github.com/mathieuletyrant/lueur/commit/8d6117a62610c873bfa953ba300d08077ca61280))
+
 ## [0.17.0](https://github.com/mathieuletyrant/lueur/compare/v0.16.1...v0.17.0) (2026-11-02)
 
 
