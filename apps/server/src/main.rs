@@ -36,7 +36,7 @@ enum Cmd {
     Analyze {
         paths: Vec<PathBuf>,
         /// Frames analyzed per second.
-        #[arg(long, default_value_t = 12.0)]
+        #[arg(long, default_value_t = 24.0)]
         fps: f32,
         #[arg(long, value_enum, default_value_t = analyze::HwAccel::Auto)]
         hwaccel: analyze::HwAccel,
@@ -77,9 +77,13 @@ enum Cmd {
 
 pub fn analyze_options() -> analyze::Options {
     analyze::Options {
-        fps: 12.0,
+        // 24: a cut lands on the right frame of most films, even on a 60 fps Strip.
+        fps: 24.0,
         cols: 16,
         rows: 9,
+        // A cell every 2 pixels of the 128×72 sample: finer than a Strip needs at 60 LEDs/m.
+        edge_cols: 64,
+        edge_rows: 36,
         hwaccel: analyze::HwAccel::Auto,
         // Software decoding only: leaves the other cores to the server.
         threads: 2,
@@ -124,12 +128,14 @@ fn cmd_inspect(path: &Path, at: Option<f64>) -> Result<()> {
     let size = std::fs::metadata(path)?.len();
     println!("source   : {}", t.source);
     println!(
-        "duration : {:.1} min, {} frames at {} fps, {}×{} grid",
+        "duration : {:.1} min, {} frames at {} fps, {}×{} grid, Edges {}×{}",
         t.duration() / 60.0,
         t.frame_count(),
         t.fps,
         t.cols,
-        t.rows
+        t.rows,
+        t.edge_cols,
+        t.edge_rows
     );
     println!("file     : {:.1} KB", size as f64 / 1024.0);
     if let Some(at) = at {

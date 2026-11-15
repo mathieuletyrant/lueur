@@ -612,7 +612,7 @@ struct HoldReq {
 /// film starting, or 10 minutes.
 async fn put_hold(State(app): State<Arc<App>>, Json(r): Json<HoldReq>) -> Res {
     app.library_video(&r.path)?;
-    if !track::is_fresh(&app.config().store, &r.path) {
+    if !track::is_playable(&app.config().store, &r.path) {
         return Err(bad("analyze this video first"));
     }
     app.lights_free()?;

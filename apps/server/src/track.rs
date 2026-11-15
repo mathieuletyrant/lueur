@@ -1,9 +1,14 @@
 //! Color track: for every moment of the film, a small grid of colors
-//! (16×9 by default) computed once and for all during analysis.
+//! (16×9) and the Edges of the picture in finer cells, computed once and for
+//! all during analysis.
 //!
-//! `.lueur` file format:
+//! `.lueur` file format, version 2:
 //! `LUEUR` | version u8 | fps f32 | cols u8 | rows u8 | frames u32 |
-//! source size u64 | len u16 | source path (UTF-8) | zstd(sRGB u8 grids)
+//! source size u64 | edge cols u8 | edge rows u8 | len u16 | source path (UTF-8) |
+//! zstd(grids, then Edges, each frame stored as its difference from the previous one)
+//!
+//! Version 1 has no edge sizes, no Edges, and frames stored as they are. It
+//! still plays, but is no longer fresh: the next Scan analyzes the video again.
 
 use crate::color::{Rgb, linear_to_srgb, luminance, srgb_to_linear};
 use anyhow::{Context, Result, bail};
@@ -11,7 +16,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 5] = b"LUEUR";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
 #[derive(Debug, Clone)]
 pub struct Track {
@@ -23,6 +28,13 @@ pub struct Track {
     pub source: String,
     /// Concatenated grids, `cols * rows * 3` sRGB bytes per frame.
     pub frames: Vec<u8>,
+    /// Cells along the top and along the bottom of the picture (0 on a version 1 Track).
+    pub edge_cols: u8,
+    /// Cells along the left and along the right side.
+    pub edge_rows: u8,
+    /// Concatenated Edges, `edge_cells() * 3` sRGB bytes per frame, in the
+    /// order of `edge_cells`: top, bottom (left to right), left, right (top to bottom).
+    pub edges: Vec<u8>,
     /// Brightness gain that lifts a dark film to a usual level (≥ 1), set by `load`.
     pub exposure: f32,
 }
@@ -34,6 +46,14 @@ impl Track {
 
     pub fn frame_len(&self) -> usize {
         self.cells() * 3
+    }
+
+    pub fn edge_cells(&self) -> usize {
+        2 * (self.edge_cols as usize + self.edge_rows as usize)
+    }
+
+    pub fn has_edges(&self) -> bool {
+        self.edge_cells() > 0 && !self.edges.is_empty()
     }
 
     pub fn frame_count(&self) -> usize {
@@ -53,10 +73,16 @@ impl Track {
         buf.push(self.rows);
         buf.extend_from_slice(&(self.frame_count() as u32).to_le_bytes());
         buf.extend_from_slice(&self.source_size.to_le_bytes());
+        buf.push(self.edge_cols);
+        buf.push(self.edge_rows);
         let src = self.source.as_bytes();
         buf.extend_from_slice(&(src.len() as u16).to_le_bytes());
         buf.extend_from_slice(src);
-        buf.extend_from_slice(&zstd::encode_all(&self.frames[..], 9)?);
+        // Two frames in a row are almost the same: their difference is mostly
+        // zeros, which zstd packs far better than the colors themselves.
+        let mut body = differences(&self.frames, self.frame_len());
+        body.extend(differences(&self.edges, self.edge_cells() * 3));
+        buf.extend_from_slice(&zstd::encode_all(&body[..], 9)?);
 
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -74,21 +100,43 @@ impl Track {
         if data.len() < 25 || &data[..5] != MAGIC {
             bail!("{} is not a lueur track", path.display());
         }
-        if data[5] != VERSION {
-            bail!("unsupported track version {}", data[5]);
+        let version = data[5];
+        if version != 1 && version != VERSION {
+            bail!("unsupported track version {version}");
         }
         let fps = f32::from_le_bytes(data[6..10].try_into()?);
         let (cols, rows) = (data[10], data[11]);
         let count = u32::from_le_bytes(data[12..16].try_into()?) as usize;
         let source_size = u64::from_le_bytes(data[16..24].try_into()?);
-        let src_len = u16::from_le_bytes(data[24..26].try_into()?) as usize;
-        let source = String::from_utf8(data[26..26 + src_len].to_vec())?;
-        let frames = zstd::decode_all(&data[26 + src_len..])?;
-        let mut t = Track { fps, cols, rows, source_size, source, frames, exposure: 1.0 };
-        t.exposure = t.measure_exposure();
-        if t.frame_count() != count {
-            bail!("truncated track ({} frames instead of {count})", t.frame_count());
+        // Version 1 has no edge sizes: its source path comes right after the file size.
+        let (edge_cols, edge_rows, at) = if version == 1 { (0, 0, 24) } else { (data[24], data[25], 26) };
+        let src_len = u16::from_le_bytes(data.get(at..at + 2).context("truncated track")?.try_into()?) as usize;
+        let source = String::from_utf8(data.get(at + 2..at + 2 + src_len).context("truncated track")?.to_vec())?;
+        let mut body = zstd::decode_all(&data[at + 2 + src_len..])?;
+        let mut t = Track {
+            fps,
+            cols,
+            rows,
+            source_size,
+            source,
+            frames: Vec::new(),
+            edge_cols,
+            edge_rows,
+            edges: Vec::new(),
+            exposure: 1.0,
+        };
+        let grids = count * t.frame_len();
+        if body.len() != grids + count * t.edge_cells() * 3 {
+            bail!("truncated track (expected {count} frames)");
         }
+        t.edges = body.split_off(grids);
+        t.frames = body;
+        if version != 1 {
+            let (grid_len, edge_len) = (t.frame_len(), t.edge_cells() * 3);
+            undo_differences(&mut t.frames, grid_len);
+            undo_differences(&mut t.edges, edge_len);
+        }
+        t.exposure = t.measure_exposure();
         Ok(t)
     }
 
@@ -150,56 +198,100 @@ impl Track {
     /// Grid in linear light at time `t` (seconds), interpolated between
     /// the two nearest analyzed frames.
     pub fn sample(&self, t: f64, out: &mut Vec<Rgb>) {
-        let n = self.frame_count();
-        out.clear();
-        if n == 0 {
-            out.resize(self.cells(), [0.0; 3]);
-            return;
-        }
-        let f = (t.max(0.0) * self.fps as f64).min((n - 1) as f64);
-        let i = f.floor() as usize;
-        let j = (i + 1).min(n - 1);
-        let k = (f - i as f64) as f32;
-        let (a, b) = (self.frame(i), self.frame(j));
-        for c in 0..self.cells() {
-            let mut px = [0f32; 3];
-            for ch in 0..3 {
-                let va = srgb_to_linear(a[c * 3 + ch]);
-                let vb = srgb_to_linear(b[c * 3 + ch]);
-                px[ch] = va + (vb - va) * k;
-            }
-            out.push(px);
-        }
+        sample_cells(&self.frames, self.cells(), self.fps, t, out);
+    }
+
+    /// Like `sample`, for the Edges (empty on a version 1 Track).
+    pub fn sample_edges(&self, t: f64, out: &mut Vec<Rgb>) {
+        sample_cells(&self.edges, self.edge_cells(), self.fps, t, out);
     }
 
     /// Like `sample`, averaged over `t ± half` seconds with triangular
     /// weights: a cut becomes a fade centered on it, with no delay.
     pub fn sample_centered(&self, t: f64, half: f64, out: &mut Vec<Rgb>) {
-        let step = 1.0 / self.fps as f64;
-        let m = (half / step).ceil() as i32;
-        if m < 1 {
-            return self.sample(t, out);
-        }
-        let mut acc = vec![[0f32; 3]; self.cells()];
-        let mut total = 0.0;
-        let mut g = Vec::new();
-        for i in -m..=m {
-            let w = 1.0 - i.abs() as f32 / (m + 1) as f32;
-            self.sample(t + i as f64 * step, &mut g);
-            for (a, c) in acc.iter_mut().zip(&g) {
-                for ch in 0..3 {
-                    a[ch] += c[ch] * w;
-                }
-            }
-            total += w;
-        }
-        out.clear();
-        out.extend(acc.iter().map(|a| a.map(|v| v / total)));
+        sample_cells_centered(&self.frames, self.cells(), self.fps, t, half, out);
+    }
+
+    /// Like `sample_centered`, for the Edges.
+    pub fn sample_edges_centered(&self, t: f64, half: f64, out: &mut Vec<Rgb>) {
+        sample_cells_centered(&self.edges, self.edge_cells(), self.fps, t, half, out);
     }
 
     pub fn frame(&self, i: usize) -> &[u8] {
         let l = self.frame_len();
         &self.frames[i * l..(i + 1) * l]
+    }
+}
+
+/// The cells of `data` (frames of `cells` sRGB colors) at `t`, in linear
+/// light, interpolated between the two nearest frames.
+fn sample_cells(data: &[u8], cells: usize, fps: f32, t: f64, out: &mut Vec<Rgb>) {
+    out.clear();
+    let len = cells * 3;
+    let n = data.len().checked_div(len).unwrap_or(0);
+    if n == 0 {
+        out.resize(cells, [0.0; 3]);
+        return;
+    }
+    let f = (t.max(0.0) * fps as f64).min((n - 1) as f64);
+    let i = f.floor() as usize;
+    let j = (i + 1).min(n - 1);
+    let k = (f - i as f64) as f32;
+    let (a, b) = (&data[i * len..(i + 1) * len], &data[j * len..(j + 1) * len]);
+    for c in 0..cells {
+        let mut px = [0f32; 3];
+        for ch in 0..3 {
+            let va = srgb_to_linear(a[c * 3 + ch]);
+            let vb = srgb_to_linear(b[c * 3 + ch]);
+            px[ch] = va + (vb - va) * k;
+        }
+        out.push(px);
+    }
+}
+
+/// `sample_cells` averaged over `t ± half` seconds with triangular weights.
+fn sample_cells_centered(data: &[u8], cells: usize, fps: f32, t: f64, half: f64, out: &mut Vec<Rgb>) {
+    let step = 1.0 / fps as f64;
+    let m = (half / step).ceil() as i32;
+    if m < 1 {
+        return sample_cells(data, cells, fps, t, out);
+    }
+    let mut acc = vec![[0f32; 3]; cells];
+    let mut total = 0.0;
+    let mut g = Vec::new();
+    for i in -m..=m {
+        let w = 1.0 - i.abs() as f32 / (m + 1) as f32;
+        sample_cells(data, cells, fps, t + i as f64 * step, &mut g);
+        for (a, c) in acc.iter_mut().zip(&g) {
+            for ch in 0..3 {
+                a[ch] += c[ch] * w;
+            }
+        }
+        total += w;
+    }
+    out.clear();
+    out.extend(acc.iter().map(|a| a.map(|v| v / total)));
+}
+
+/// Each frame of `len` bytes minus the frame before it (the first one as it is).
+fn differences(data: &[u8], len: usize) -> Vec<u8> {
+    let mut out = data.to_vec();
+    if len == 0 {
+        return out;
+    }
+    for i in (len..data.len()).rev() {
+        out[i] = data[i].wrapping_sub(data[i - len]);
+    }
+    out
+}
+
+/// Undoes `differences`, in place.
+fn undo_differences(data: &mut [u8], len: usize) {
+    if len == 0 {
+        return;
+    }
+    for i in len..data.len() {
+        data[i] = data[i].wrapping_add(data[i - len]);
     }
 }
 
@@ -221,13 +313,25 @@ pub fn track_path(store: &Path, video: &Path) -> PathBuf {
     store.join(format!("{stem}-{h:016x}.lueur"))
 }
 
-/// A track exists and still matches the file (same size).
+/// A track exists, still matches the file (same size) and is of the current
+/// version: nothing to analyze again.
 pub fn is_fresh(store: &Path, video: &Path) -> bool {
     fresh_duration(store, video).is_some()
 }
 
-/// Duration in seconds of the video's track, when it is up to date (header only).
+/// Duration in seconds of the video's track, when it is fresh (header only).
 pub fn fresh_duration(store: &Path, video: &Path) -> Option<f64> {
+    let (version, duration) = header(store, video)?;
+    (version == VERSION).then_some(duration)
+}
+
+/// A track exists and still matches the file, maybe of an older version: it plays.
+pub fn is_playable(store: &Path, video: &Path) -> bool {
+    header(store, video).is_some()
+}
+
+/// The version and duration of the video's track, when it matches the file.
+fn header(store: &Path, video: &Path) -> Option<(u8, f64)> {
     let meta = std::fs::metadata(video).ok()?;
     let mut head = [0u8; 24];
     std::fs::File::open(track_path(store, video)).ok()?.read_exact(&mut head).ok()?;
@@ -236,7 +340,7 @@ pub fn fresh_duration(store: &Path, video: &Path) -> Option<f64> {
     }
     let fps = f32::from_le_bytes(head[6..10].try_into().ok()?);
     let frames = u32::from_le_bytes(head[12..16].try_into().ok()?);
-    (fps > 0.0).then(|| frames as f64 / fps as f64)
+    (fps > 0.0).then(|| (head[5], frames as f64 / fps as f64))
 }
 
 #[cfg(test)]
@@ -249,8 +353,18 @@ mod tests {
         let mut frames = vec![0u8; 2 * 2 * 3 * 2];
         frames[..12].fill(0); // frame 0 black
         frames[12..].fill(255); // frame 1 white
-        let t =
-            Track { fps: 10.0, cols: 2, rows: 2, source_size: 42, source: "/x/film.mkv".into(), frames, exposure: 1.0 };
+        let t = Track {
+            fps: 10.0,
+            cols: 2,
+            rows: 2,
+            source_size: 42,
+            source: "/x/film.mkv".into(),
+            frames,
+            edge_cols: 0,
+            edge_rows: 0,
+            edges: Vec::new(),
+            exposure: 1.0,
+        };
         let p = dir.join("t.lueur");
         t.save(&p).unwrap();
         let l = Track::load(&p).unwrap();
@@ -269,6 +383,9 @@ mod tests {
             source_size: 0,
             source: String::new(),
             frames: [[0; 30], [255; 30]].concat(),
+            edge_cols: 0,
+            edge_rows: 0,
+            edges: Vec::new(),
             exposure: 1.0,
         };
         let mut g = Vec::new();
@@ -283,6 +400,51 @@ mod tests {
         assert!(dim.measure_exposure() > 2.0, "{}", dim.measure_exposure());
         let bright = Track { frames: vec![230; 3 * 100], ..cut.clone() };
         assert_eq!(bright.measure_exposure(), 1.0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn edges_survive_saving_and_version_1_still_loads() {
+        let dir = std::env::temp_dir().join(format!("lueur-test-edges-{}", std::process::id()));
+        // 2 Edge cols and 1 Edge row: 6 cells; 3 frames, each brighter than the last.
+        let edges: Vec<u8> = (0..3u8).flat_map(|f| (0..18u8).map(move |i| f * 50 + i)).collect();
+        let t = Track {
+            fps: 10.0,
+            cols: 1,
+            rows: 1,
+            source_size: 7,
+            source: "/x/film.mkv".into(),
+            frames: vec![10, 20, 30, 200, 100, 0, 255, 255, 255],
+            edge_cols: 2,
+            edge_rows: 1,
+            edges: edges.clone(),
+            exposure: 1.0,
+        };
+        let p = dir.join("t.lueur");
+        t.save(&p).unwrap();
+        let l = Track::load(&p).unwrap();
+        assert_eq!((l.edge_cols, l.edge_rows, l.edge_cells()), (2, 1, 6));
+        assert_eq!(l.frames, t.frames);
+        assert_eq!(l.edges, edges);
+        let mut g = Vec::new();
+        l.sample_edges(0.2, &mut g);
+        assert_eq!(g.len(), 6);
+        assert!((g[0][0] - srgb_to_linear(100)).abs() < 1e-6, "{:?}", g[0]);
+
+        // A version 1 file, as 0.19 wrote it: grids only, stored as they are.
+        let mut v1 = b"LUEUR".to_vec();
+        v1.push(1);
+        v1.extend_from_slice(&10f32.to_le_bytes());
+        v1.extend_from_slice(&[1, 1]);
+        v1.extend_from_slice(&2u32.to_le_bytes());
+        v1.extend_from_slice(&7u64.to_le_bytes());
+        v1.extend_from_slice(&3u16.to_le_bytes());
+        v1.extend_from_slice(b"/x/");
+        v1.extend_from_slice(&zstd::encode_all(&[0u8, 0, 0, 255, 255, 255][..], 9).unwrap());
+        std::fs::write(&p, &v1).unwrap();
+        let old = Track::load(&p).unwrap();
+        assert_eq!((old.frame_count(), old.has_edges(), old.source.as_str()), (2, false, "/x/"));
+        assert_eq!(old.frame(1), [255, 255, 255]);
         std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -187,10 +187,17 @@ impl Player {
             warn!("\"{}\": unknown path (API key without admin rights?)", np.name);
             return None;
         };
+        let video = self.cfg.local_path(jpath);
         if let Some(t) = self.find_track(np) {
+            // An older Track plays meanwhile; this film's new one comes before the rest of the Library.
+            if !track::is_fresh(&self.cfg.store, &video)
+                && !crate::queue::excluded(&video, &self.cfg.exclude)
+                && self.queue.push_front(video)
+            {
+                info!("\"{}\" has an older track: analyzing it again first, it plays as it is meanwhile", np.name);
+            }
             return Some(t);
         }
-        let video = self.cfg.local_path(jpath);
         warn!("no track for \"{}\" (Jellyfin path: {jpath}, local path: {})", np.name, video.display());
         if !video.exists() {
             warn!("lueur can't see {}: check the Library folders", video.display());
@@ -260,8 +267,12 @@ impl Player {
         let mut current: Option<(String, Option<Arc<Track>>)> = None;
         let mut paused_since: Option<Instant> = None;
         let mut retry_track_at = Instant::now();
-        let mut renderer = Renderer::new(&self.channels);
-        let mut still_renderer = Renderer::new(&self.channels);
+        let strip = !self.cfg.wled.host.is_empty();
+        let new_renderer = |channels: &[Channel]| {
+            if strip { Renderer::for_strip(channels) } else { Renderer::for_area(channels) }
+        };
+        let mut renderer = new_renderer(&self.channels);
+        let mut still_renderer = new_renderer(&self.channels);
         let mut still: Option<(PathBuf, Track)> = None;
         let mut tick = tokio::time::interval(frame(&self.cfg));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
