@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/mathieuletyrant/lueur/compare/v0.22.0...v0.23.0) (2026-11-15)
+
+
+### ✨ Features
+
+* **look:** flash guard and black threshold ([55a9e8c](https://github.com/mathieuletyrant/lueur/commit/55a9e8c2b192db146fb5436ca51be0b81314a8dd)), closes [#28](https://github.com/mathieuletyrant/lueur/issues/28)
+
 ## [0.22.0](https://github.com/mathieuletyrant/lueur/compare/v0.21.0...v0.22.0) (2026-11-15)
 
 
