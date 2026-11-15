@@ -2,12 +2,14 @@
 //!
 //! Apps report their position every few seconds, each on its own schedule.
 //! The clock times the reports itself, learns how late each app's check-in
-//! runs, and once locked only re-syncs on a seek, a pause or a new film,
-//! correcting small drifts gently so the lights stay smooth.
+//! runs, and once locked only re-syncs on a seek, a pause or a new film.
+//! Between those, single reports are noisy (an Apple TV's swing ±0.4 s
+//! around the truth every few seconds): the clock follows the mean of the
+//! last reports' errors, gently, so it stays put instead of chasing each one.
 
 use crate::config::SyncConfig;
 use crate::jellyfin::NowPlaying;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// What a playback report did to the clock.
@@ -18,7 +20,8 @@ pub enum Correction {
     /// The report disagreed by more than `jump`: the clock jumped by `error`
     /// seconds (positive: the app was ahead of the clock).
     Jumped { error: f64 },
-    /// The report disagreed by more than `drift`: a fifth of `error` corrected.
+    /// The recent reports, together, disagree by more than `drift`: part of
+    /// `error` corrected.
     Nudged { error: f64 },
     /// Close enough: nothing changed.
     Steady { error: f64 },
@@ -29,7 +32,7 @@ pub struct PlaybackClock {
     learn: bool,
     /// Errors above this re-sync at once (seconds).
     jump: f64,
-    /// Errors above this are corrected gently (seconds).
+    /// Errors above this, in the mean of recent reports, are corrected gently (seconds).
     drift: f64,
     /// The last report whose position changed, when we saw it, and whether it was paused.
     seen: Option<(String, i64, Instant, bool)>,
@@ -40,7 +43,19 @@ pub struct PlaybackClock {
     paused: bool,
     /// Film position at an instant; the clock runs from there.
     anchor: Option<(Instant, f64)>,
+    /// Gentle corrections since the anchor (seconds), added to it.
+    offset: f64,
+    /// The last reports' errors against the anchor alone (without `offset`).
+    errors: VecDeque<f64>,
 }
+
+/// How many reports the mean looks at: about 40 s of an Apple TV's, longer
+/// than its swings, so they cancel out.
+const WINDOW: usize = 30;
+/// Reports needed before the mean may correct anything.
+const MIN_REPORTS: usize = 3;
+/// The part of the mean's error corrected at each report.
+const GAIN: f64 = 0.3;
 
 impl PlaybackClock {
     pub fn new(cfg: &SyncConfig) -> Self {
@@ -54,6 +69,8 @@ impl PlaybackClock {
             item: None,
             paused: false,
             anchor: None,
+            offset: 0.0,
+            errors: VecDeque::new(),
         }
     }
 
@@ -64,25 +81,43 @@ impl PlaybackClock {
         let changed = self.item.as_deref() != Some(&np.item_id) || self.paused != np.paused;
         self.item = Some(np.item_id.clone());
         self.paused = np.paused;
-        let (Some(expected), Some((i, p)), false) = (expected, self.anchor, changed) else {
-            self.anchor = Some((np.at, reported));
+        let (Some(expected), false) = (expected, changed) else {
+            self.restart(np.at, reported);
             return Correction::Restarted;
         };
         let error = reported - expected;
         if error.abs() > self.jump {
-            self.anchor = Some((np.at, reported));
-            Correction::Jumped { error }
-        } else if error.abs() > self.drift {
-            self.anchor = Some((i, p + error * 0.2));
-            Correction::Nudged { error }
+            self.restart(np.at, reported);
+            return Correction::Jumped { error };
+        }
+        if self.paused {
+            // Not moving: nothing to average.
+            return Correction::Steady { error };
+        }
+        if self.errors.len() == WINDOW {
+            self.errors.pop_front();
+        }
+        self.errors.push_back(error + self.offset);
+        let off = self.errors.iter().sum::<f64>() / self.errors.len() as f64 - self.offset;
+        if self.errors.len() >= MIN_REPORTS && off.abs() > self.drift {
+            self.offset += off * GAIN;
+            Correction::Nudged { error: off }
         } else {
             Correction::Steady { error }
         }
     }
 
+    /// Runs from `position` at `at`, forgetting past errors.
+    fn restart(&mut self, at: Instant, position: f64) {
+        self.anchor = Some((at, position));
+        self.offset = 0.0;
+        self.errors.clear();
+    }
+
     /// Where the film is at `when`, once a report came in.
     pub fn position(&self, when: Instant) -> Option<f64> {
         let (i, p) = self.anchor?;
+        let p = p + self.offset;
         Some(if self.paused { p } else { p + when.saturating_duration_since(i).as_secs_f64() })
     }
 
@@ -94,6 +129,7 @@ impl PlaybackClock {
     /// Nothing plays any more.
     pub fn reset(&mut self) {
         (self.seen, self.item, self.anchor, self.paused) = (None, None, None, false);
+        (self.offset, self.errors) = (0.0, VecDeque::new());
     }
 
     /// The position this report stands for at `np.at`. We extrapolate from
@@ -226,20 +262,48 @@ mod tests {
         // A slightly noisy report: ignored.
         assert!(matches!(c.report(&np(t0, "a", 110.1, 10.0, false, None)), Correction::Steady { .. }));
         assert!((c.position(at(10.0)).unwrap() - 110.0).abs() < 1e-9);
-        // Off by 0.5 s: a fifth of it corrected.
-        let Correction::Nudged { error } = c.report(&np(t0, "a", 120.5, 20.0, false, None)) else { panic!() };
-        assert!((error - 0.5).abs() < 1e-6, "{error}");
-        assert!((c.position(at(20.0)).unwrap() - 120.1).abs() < 1e-6);
+        // One report off by 0.5 s: not enough to move.
+        assert!(matches!(c.report(&np(t0, "a", 120.5, 20.0, false, None)), Correction::Steady { .. }));
+        // The app keeps saying so: the clock moves part of the way, then the rest.
+        let Correction::Nudged { error } = c.report(&np(t0, "a", 121.5, 21.0, false, None)) else { panic!() };
+        assert!(error > 0.3 && error < 0.5, "{error}");
+        assert!(c.position(at(21.0)).unwrap() > 121.05);
+        for s in 22..60 {
+            c.report(&np(t0, "a", s as f64 + 100.5, s as f64, false, None));
+        }
+        assert!((c.position(at(59.0)).unwrap() - 159.5).abs() < 0.25, "{:?}", c.position(at(59.0)));
         // The app 2 s ahead: the clock jumps there, and says by how much.
-        let Correction::Jumped { error } = c.report(&np(t0, "a", 132.1, 30.0, false, None)) else { panic!() };
+        let ahead = c.position(at(60.0)).unwrap() + 2.0;
+        let Correction::Jumped { error } = c.report(&np(t0, "a", ahead, 60.0, false, None)) else { panic!() };
         assert!((error - 2.0).abs() < 1e-6, "{error}");
-        assert!((c.position(at(30.0)).unwrap() - 132.1).abs() < 1e-9);
+        assert!((c.position(at(60.0)).unwrap() - ahead).abs() < 1e-9);
         // A seek: immediate re-sync.
-        assert!(matches!(c.report(&np(t0, "a", 300.0, 31.0, false, None)), Correction::Jumped { .. }));
+        assert!(matches!(c.report(&np(t0, "a", 300.0, 61.0, false, None)), Correction::Jumped { .. }));
         // Pause: the clock stops.
-        c.report(&np(t0, "a", 301.0, 32.0, true, None));
-        assert_eq!(c.position(at(60.0)), Some(301.0));
+        c.report(&np(t0, "a", 301.0, 62.0, true, None));
+        assert_eq!(c.position(at(90.0)), Some(301.0));
         c.reset();
-        assert_eq!(c.position(at(60.0)), None);
+        assert_eq!(c.position(at(90.0)), None);
+    }
+
+    #[test]
+    fn stays_put_while_reports_swing_around_the_truth() {
+        let t0 = Instant::now();
+        let at = |s: f64| t0 + Duration::from_secs_f64(s);
+        let mut c = PlaybackClock::new(&sync(false, 0.75, 0.1));
+        c.report(&np(t0, "a", 300.0, 0.0, false, None));
+        // As an Apple TV does: about +0.4 s for a while, then about -0.4 s, around the truth.
+        let mut nudges = 0;
+        let mut worst: f64 = 0.0;
+        for k in 1..60 {
+            let s = k as f64 * 1.4;
+            let swing = if (k / 7) % 2 == 0 { 0.4 } else { -0.4 } * (1.0 - (k % 7) as f64 / 10.0);
+            if matches!(c.report(&np(t0, "a", 300.0 + s + swing, s, false, None)), Correction::Nudged { .. }) {
+                nudges += 1;
+            }
+            worst = worst.max((c.position(at(s)).unwrap() - (300.0 + s)).abs());
+        }
+        assert!(worst < 0.2, "the clock strayed {worst:.2} s from the truth");
+        assert!(nudges < 10, "{nudges} nudges");
     }
 }
