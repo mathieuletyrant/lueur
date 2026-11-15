@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/mathieuletyrant/lueur/compare/v0.18.0...v0.19.0) (2026-11-15)
+
+
+### ✨ Features
+
+* **lights:** WLED output over DDP ([7e3db3b](https://github.com/mathieuletyrant/lueur/commit/7e3db3b855b9ff77e1ceead57eefedbe0a292eb0)), closes [#31](https://github.com/mathieuletyrant/lueur/issues/31)
+
 ## [0.18.0](https://github.com/mathieuletyrant/lueur/compare/v0.17.0...v0.18.0) (2026-11-03)
 
 
