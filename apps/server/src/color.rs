@@ -44,6 +44,11 @@ pub struct Look {
     pub min_brightness: f32,
     /// Smoothing time constant in milliseconds (0 = none).
     pub smoothing_ms: f32,
+    /// How long a cut between two shots fades, centered on the cut, in
+    /// milliseconds: smoothing stays low so the lights follow the picture,
+    /// cuts still fade softly. Below `smoothing_ms` (or 0), a cut fades like
+    /// the rest. Only with centered smoothing.
+    pub cut_fade_ms: f32,
     /// Offset added to the Jellyfin position, in milliseconds
     /// (positive = the lights run further ahead in the film).
     pub offset_ms: f64,
@@ -69,6 +74,7 @@ impl Default for Look {
             min_brightness: 0.0,
             // Centered, so a softer default costs no delay.
             smoothing_ms: 250.0,
+            cut_fade_ms: 400.0,
             offset_ms: 0.0,
             spread: 1.0,
             fit_area: true,

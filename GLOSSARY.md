@@ -72,6 +72,10 @@ _Avoid_: Auto brightness, gain
 The folder holding all Tracks.
 _Avoid_: Cache, library
 
+**Cut**:
+A change of shot from one frame to the next, found in a Track when it loads; the Look can fade cuts longer than the rest.
+_Avoid_: Scene change, transition
+
 **Look**:
 The user's color tuning applied at playback: brightness, saturation, smoothing, and how much of the screen each light reads.
 _Avoid_: Settings, profile
