@@ -5,7 +5,7 @@ import { useApp } from "../../context";
 import { Alert, Button, Field, Input, Select } from "../../ui";
 import { Step } from "./Step";
 
-export function JellyfinStep({ done }: { done: boolean }) {
+export function JellyfinStep({ n, done }: { n: number; done: boolean }) {
   const { cfg, patch } = useApp();
   const [open, setOpen] = useState(!done);
   const [url, setUrl] = useState(cfg.jellyfin.url);
@@ -31,7 +31,7 @@ export function JellyfinStep({ done }: { done: boolean }) {
 
   return (
     <Step
-      n={3}
+      n={n}
       title="Jellyfin"
       done={done}
       open={open}

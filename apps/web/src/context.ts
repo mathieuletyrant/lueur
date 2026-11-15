@@ -27,7 +27,8 @@ export type View = keyof typeof views;
 export function setupSteps(cfg: Config, status?: Status) {
   return {
     bridge: cfg.paired,
-    area: cfg.paired && !!(cfg.hue.area || status?.player.area),
+    // A WLED Strip has no Area to pick: its controller is enough.
+    area: cfg.paired && !!(cfg.wled.host || cfg.hue.area || status?.player.area),
     jellyfin: !!cfg.jellyfin.url && cfg.has_api_key,
     libraries: cfg.libraries.length > 0,
   };

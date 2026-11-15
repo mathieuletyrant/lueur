@@ -96,13 +96,13 @@ The image is amd64, tagged `latest`, `x.y` and `x.y.z`. `--device /dev/dri` is o
 
 ## 🎞️ WLED strip
 
-A [WLED](https://kno.wled.ge) strip behind the TV gets one color per LED, sent straight to the controller (DDP), in place of the Hue area. There is no setup screen yet: describe the strip in `lueur.json`, seen from the couch.
+A [WLED](https://kno.wled.ge) strip behind the TV gets one color per LED, sent straight to the controller (DDP), in place of the Hue area. In **Settings → Lights → WLED strip**, pick the controller (found on the network, or typed), then say where LED 0 is, which way the strip runs, and how many LEDs are behind each side of the TV. The drawing shows the result; click a LED to make it blink on the strip, or play the rainbow. Switch back to **Philips Hue** to go back to the Hue area.
+
+The same settings live in `lueur.json`:
 
 ```json
 "wled": { "host": "192.168.1.80", "start": "bottom-right", "clockwise": false, "right": 35, "top": 65, "left": 35, "bottom": 0 }
 ```
-
-`start` is the corner of LED 0 (`bottom-left`, `top-left`, `top-right`, `bottom-right`). `lueur test` sends a rainbow to check it. Remove `host` to go back to Hue.
 
 <img src="docs/screenshots/look.jpg" alt="Look: test on a frame of a film, intensity presets and the sliders" />
 

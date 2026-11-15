@@ -2,6 +2,7 @@ import { Lightbulb, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, useLoad } from "../../api";
 import { AreaView } from "../../components/AreaView";
+import { StripView } from "../../components/StripView";
 import { Barcode } from "../../components/Barcode";
 import { useApp } from "../../context";
 import { Alert, Button, Card, CardHeader, Select, Slider, time } from "../../ui";
@@ -110,10 +111,18 @@ export function FrameTest() {
           {error && <Alert>{error}</Alert>}
         </div>
         <div className="lg:col-span-3">
-          <AreaView
-            screen={video ? api.frameUrl(video.path, shown) : undefined}
-            channels={holding ? (p?.channels ?? []) : (p?.channels ?? []).map((c) => ({ ...c, color: undefined }))}
-          />
+          {cfg.wled.host ? (
+            <StripView
+              screen={video ? api.frameUrl(video.path, shown) : undefined}
+              leds={p?.channels ?? []}
+              colors={holding ? new Map((p?.channels ?? []).map((c) => [c.id, c.color])) : undefined}
+            />
+          ) : (
+            <AreaView
+              screen={video ? api.frameUrl(video.path, shown) : undefined}
+              channels={holding ? (p?.channels ?? []) : (p?.channels ?? []).map((c) => ({ ...c, color: undefined }))}
+            />
+          )}
         </div>
       </div>
     </Card>
