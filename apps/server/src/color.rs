@@ -64,6 +64,14 @@ pub struct Look {
     pub auto_exposure: bool,
     /// How much grey, washed-out colors lean to a warm white (0 = none, 1 = fully).
     pub warm_greys: f32,
+    /// How much Flashes (a few frames much brighter than around them) are
+    /// toned down: 0 = as they are, 1 = back to the level around them.
+    pub flash_guard: f32,
+    /// Colors darker than this (luminance, linear light, after exposure) fade
+    /// out instead of showing dim and muddy (0 = off).
+    pub black_threshold: f32,
+    /// How fast they fade under the threshold: 1 is linear, higher is darker sooner.
+    pub black_falloff: f32,
 }
 
 impl Default for Look {
@@ -81,6 +89,9 @@ impl Default for Look {
             centered_smoothing: true,
             auto_exposure: true,
             warm_greys: 0.5,
+            flash_guard: 0.5,
+            black_threshold: 0.0,
+            black_falloff: 2.0,
         }
     }
 }
@@ -109,6 +120,14 @@ impl Look {
         }
         for v in &mut c {
             *v = (l + (*v - l) * self.saturation).max(0.0) * self.brightness;
+        }
+        // Under the Black threshold, fade out along a curve: 1 at the threshold, 0 at black.
+        let dim = luminance(c);
+        if self.black_threshold > 0.0 && dim < self.black_threshold {
+            let k = (dim / self.black_threshold).powf(self.black_falloff.max(0.1));
+            for v in &mut c {
+                *v *= k;
+            }
         }
         let max = c[0].max(c[1]).max(c[2]);
         if max > 1.0 {
@@ -159,5 +178,21 @@ mod tests {
         let look = Look { brightness: 2.0, saturation: 1.0, warm_greys: 0.0, ..Default::default() };
         let c = look.apply([0.8, 0.4, 0.0]);
         assert!((c[0] - 1.0).abs() < 1e-6 && (c[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn under_the_black_threshold_colors_fade_out_with_no_step() {
+        let look =
+            Look { saturation: 1.0, warm_greys: 0.0, black_threshold: 0.02, black_falloff: 2.0, ..Default::default() };
+        // Above: untouched.
+        assert_eq!(look.apply([0.1, 0.05, 0.02]), [0.1, 0.05, 0.02]);
+        // Across the threshold, no step; under it, darker and darker, down to black.
+        let lum = |v: f32| luminance(look.apply([v; 3]));
+        assert!((lum(0.0201) - lum(0.0199)).abs() < 1e-3);
+        assert!((lum(0.01) - 0.01 * 0.25).abs() < 1e-5, "{}", lum(0.01));
+        assert!(lum(0.005) < lum(0.01) && lum(0.0) == 0.0);
+        // Off: dim colors pass.
+        let off = Look { black_threshold: 0.0, ..look };
+        assert_eq!(off.apply([0.01; 3]), [0.01; 3]);
     }
 }

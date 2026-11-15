@@ -76,6 +76,14 @@ _Avoid_: Cache, library
 A change of shot from one frame to the next, found in a Track when it loads; the Look can fade cuts longer than the rest.
 _Avoid_: Scene change, transition
 
+**Flash**:
+A few frames (an explosion, lightning, a camera flash) much brighter than the frames around them, found in a Track when it loads; the Look's Flash guard tones them down.
+_Avoid_: Spike, strobe
+
+**Black threshold**:
+The darkness under which the Look fades colors out instead of showing them dim and muddy; the opposite of the minimum brightness.
+_Avoid_: Black level, cutoff
+
 **Look**:
 The user's color tuning applied at playback: brightness, saturation, smoothing, and how much of the screen each light reads.
 _Avoid_: Settings, profile

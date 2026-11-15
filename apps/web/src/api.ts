@@ -12,6 +12,9 @@ export type Look = {
   centered_smoothing: boolean;
   auto_exposure: boolean;
   warm_greys: number;
+  flash_guard: number;
+  black_threshold: number;
+  black_falloff: number;
 };
 
 export type SyncConfig = { learn_report_delay: boolean; jump_ms: number; drift_ms: number };

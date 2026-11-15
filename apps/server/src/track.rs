@@ -22,6 +22,12 @@ const VERSION: u8 = 2;
 const CUT_CHANGE: f32 = 0.08;
 /// …if it changes this many times more than the frames around it.
 const CUT_CONTRAST: f32 = 2.5;
+/// A Flash lasts at most this long (seconds)…
+const FLASH_MAX: f64 = 0.15;
+/// …and is at least this many times as bright as the frame before it…
+const FLASH_RATIO: f32 = 2.0;
+/// …and at least this much brighter (mean linear luminance, 0 to 1).
+const FLASH_RISE: f32 = 0.05;
 
 #[derive(Debug, Clone)]
 pub struct Track {
@@ -44,6 +50,9 @@ pub struct Track {
     pub exposure: f32,
     /// Cuts between two shots, in seconds from the start, sorted; found by `load`.
     pub cuts: Vec<f64>,
+    /// Per frame, the gain that brings a Flash back to the level around it
+    /// (1 elsewhere); empty when the film has none. Found by `load`.
+    pub flash_gains: Vec<f32>,
 }
 
 impl Track {
@@ -132,6 +141,7 @@ impl Track {
             edges: Vec::new(),
             exposure: 1.0,
             cuts: Vec::new(),
+            flash_gains: Vec::new(),
         };
         let grids = count * t.frame_len();
         if body.len() != grids + count * t.edge_cells() * 3 {
@@ -146,6 +156,7 @@ impl Track {
         }
         t.exposure = t.measure_exposure();
         t.cuts = t.find_cuts();
+        t.flash_gains = t.find_flashes();
         Ok(t)
     }
 
@@ -198,6 +209,61 @@ impl Track {
             .collect()
     }
 
+    /// Flashes (an explosion, lightning, a camera flash): a few frames much
+    /// brighter than the frames before and after them. Each gets the gain that
+    /// brings it back to the brighter of those two; a bright scene that lasts
+    /// is no Flash. Empty when there is none.
+    fn find_flashes(&self) -> Vec<f32> {
+        let n = self.frame_count();
+        let level: Vec<f32> = (0..n)
+            .map(|i| {
+                let cells = self.frame(i).as_chunks::<3>().0;
+                let sum: f32 = cells
+                    .iter()
+                    .map(|c| luminance([srgb_to_linear(c[0]), srgb_to_linear(c[1]), srgb_to_linear(c[2])]))
+                    .sum();
+                sum / cells.len().max(1) as f32
+            })
+            .collect();
+        let longest = ((FLASH_MAX * self.fps as f64).round() as usize).max(1);
+        let mut gains = Vec::new();
+        let mut i = 1;
+        while i < n {
+            let before = level[i - 1];
+            let bright = |l: f32| l >= before * FLASH_RATIO && l - before >= FLASH_RISE;
+            if !bright(level[i]) {
+                i += 1;
+                continue;
+            }
+            // The Flash's frames, up to the first one back near the level before.
+            let end = (i..n).find(|&j| !bright(level[j])).unwrap_or(n);
+            if end < n && end - i <= longest {
+                if gains.is_empty() {
+                    gains = vec![1.0; n];
+                }
+                let around = before.max(level[end]);
+                for j in i..end {
+                    gains[j] = (around / level[j]).min(1.0);
+                }
+            }
+            i = end.max(i + 1);
+        }
+        gains
+    }
+
+    /// The cells the lights read at `t`, in linear light: the Edges or the
+    /// grid, averaged over `t ± half` with triangular weights when `half` is
+    /// set (a cut becomes a fade centered on it, with no delay), with Flashes toned
+    /// down by `flash_guard` (0: as they are, 1: back to the level around them).
+    pub fn sample_for_lights(&self, t: f64, half: Option<f64>, edges: bool, flash_guard: f32, out: &mut Vec<Rgb>) {
+        let (data, cells) = if edges { (&self.edges, self.edge_cells()) } else { (&self.frames, self.cells()) };
+        let gains = Gains { gains: &self.flash_gains, guard: flash_guard.clamp(0.0, 1.0) };
+        match half {
+            Some(half) => sample_cells_centered(data, cells, self.fps, t, half, &gains, out),
+            None => sample_cells(data, cells, self.fps, t, &gains, out),
+        }
+    }
+
     /// How far `t` is from the nearest cut (seconds), if the film has any.
     pub fn to_nearest_cut(&self, t: f64) -> Option<f64> {
         let i = self.cuts.partition_point(|c| *c < t);
@@ -243,23 +309,7 @@ impl Track {
     /// Grid in linear light at time `t` (seconds), interpolated between
     /// the two nearest analyzed frames.
     pub fn sample(&self, t: f64, out: &mut Vec<Rgb>) {
-        sample_cells(&self.frames, self.cells(), self.fps, t, out);
-    }
-
-    /// Like `sample`, for the Edges (empty on a version 1 Track).
-    pub fn sample_edges(&self, t: f64, out: &mut Vec<Rgb>) {
-        sample_cells(&self.edges, self.edge_cells(), self.fps, t, out);
-    }
-
-    /// Like `sample`, averaged over `t ± half` seconds with triangular
-    /// weights: a cut becomes a fade centered on it, with no delay.
-    pub fn sample_centered(&self, t: f64, half: f64, out: &mut Vec<Rgb>) {
-        sample_cells_centered(&self.frames, self.cells(), self.fps, t, half, out);
-    }
-
-    /// Like `sample_centered`, for the Edges.
-    pub fn sample_edges_centered(&self, t: f64, half: f64, out: &mut Vec<Rgb>) {
-        sample_cells_centered(&self.edges, self.edge_cells(), self.fps, t, half, out);
+        sample_cells(&self.frames, self.cells(), self.fps, t, &Gains::NONE, out);
     }
 
     pub fn frame(&self, i: usize) -> &[u8] {
@@ -268,9 +318,26 @@ impl Track {
     }
 }
 
+/// Per-frame gains (the Flash guard), applied as strongly as `guard` says.
+struct Gains<'a> {
+    gains: &'a [f32],
+    guard: f32,
+}
+
+impl Gains<'_> {
+    const NONE: Gains<'static> = Gains { gains: &[], guard: 0.0 };
+
+    fn at(&self, frame: usize) -> f32 {
+        match self.gains.get(frame) {
+            Some(g) if self.guard > 0.0 => 1.0 - self.guard * (1.0 - g),
+            _ => 1.0,
+        }
+    }
+}
+
 /// The cells of `data` (frames of `cells` sRGB colors) at `t`, in linear
 /// light, interpolated between the two nearest frames.
-fn sample_cells(data: &[u8], cells: usize, fps: f32, t: f64, out: &mut Vec<Rgb>) {
+fn sample_cells(data: &[u8], cells: usize, fps: f32, t: f64, gains: &Gains, out: &mut Vec<Rgb>) {
     out.clear();
     let len = cells * 3;
     let n = data.len().checked_div(len).unwrap_or(0);
@@ -283,11 +350,12 @@ fn sample_cells(data: &[u8], cells: usize, fps: f32, t: f64, out: &mut Vec<Rgb>)
     let j = (i + 1).min(n - 1);
     let k = (f - i as f64) as f32;
     let (a, b) = (&data[i * len..(i + 1) * len], &data[j * len..(j + 1) * len]);
+    let (ga, gb) = (gains.at(i), gains.at(j));
     for c in 0..cells {
         let mut px = [0f32; 3];
         for ch in 0..3 {
-            let va = srgb_to_linear(a[c * 3 + ch]);
-            let vb = srgb_to_linear(b[c * 3 + ch]);
+            let va = srgb_to_linear(a[c * 3 + ch]) * ga;
+            let vb = srgb_to_linear(b[c * 3 + ch]) * gb;
             px[ch] = va + (vb - va) * k;
         }
         out.push(px);
@@ -297,11 +365,11 @@ fn sample_cells(data: &[u8], cells: usize, fps: f32, t: f64, out: &mut Vec<Rgb>)
 /// `sample_cells` averaged over `t ± half` seconds with triangular weights,
 /// down to zero at `± half`: the average changes smoothly with `half`, so a
 /// wider window shows no jump.
-fn sample_cells_centered(data: &[u8], cells: usize, fps: f32, t: f64, half: f64, out: &mut Vec<Rgb>) {
+fn sample_cells_centered(data: &[u8], cells: usize, fps: f32, t: f64, half: f64, gains: &Gains, out: &mut Vec<Rgb>) {
     let step = 1.0 / fps as f64;
     let m = (half / step).floor() as i32;
     if m < 1 {
-        return sample_cells(data, cells, fps, t, out);
+        return sample_cells(data, cells, fps, t, gains, out);
     }
     let mut acc = vec![[0f32; 3]; cells];
     let mut total = 0.0;
@@ -311,7 +379,7 @@ fn sample_cells_centered(data: &[u8], cells: usize, fps: f32, t: f64, half: f64,
         if w <= 0.0 {
             continue;
         }
-        sample_cells(data, cells, fps, t + i as f64 * step, &mut g);
+        sample_cells(data, cells, fps, t + i as f64 * step, gains, &mut g);
         for (a, c) in acc.iter_mut().zip(&g) {
             for ch in 0..3 {
                 a[ch] += c[ch] * w;
@@ -415,6 +483,7 @@ mod tests {
             edges: Vec::new(),
             exposure: 1.0,
             cuts: Vec::new(),
+            flash_gains: Vec::new(),
         };
         let p = dir.join("t.lueur");
         t.save(&p).unwrap();
@@ -439,11 +508,12 @@ mod tests {
             edges: Vec::new(),
             exposure: 1.0,
             cuts: Vec::new(),
+            flash_gains: Vec::new(),
         };
         let mut g = Vec::new();
-        cut.sample_centered(0.95, 0.3, &mut g);
+        cut.sample_for_lights(0.95, Some(0.3), false, 0.0, &mut g);
         assert!((g[0][0] - 0.5).abs() < 0.05, "{:?}", g[0]);
-        cut.sample_centered(0.75, 0.3, &mut g);
+        cut.sample_for_lights(0.75, Some(0.3), false, 0.0, &mut g);
         assert!(g[0][0] > 0.0 && g[0][0] < 0.2, "{:?}", g[0]);
         // Barcode: black then white.
         assert_eq!(cut.barcode(2), vec![[0; 3], [255; 3]]);
@@ -472,6 +542,7 @@ mod tests {
             edges: edges.clone(),
             exposure: 1.0,
             cuts: Vec::new(),
+            flash_gains: Vec::new(),
         };
         let p = dir.join("t.lueur");
         t.save(&p).unwrap();
@@ -480,7 +551,7 @@ mod tests {
         assert_eq!(l.frames, t.frames);
         assert_eq!(l.edges, edges);
         let mut g = Vec::new();
-        l.sample_edges(0.2, &mut g);
+        l.sample_for_lights(0.2, None, true, 0.0, &mut g);
         assert_eq!(g.len(), 6);
         assert!((g[0][0] - srgb_to_linear(100)).abs() < 1e-6, "{:?}", g[0]);
 
@@ -520,6 +591,7 @@ mod tests {
             edges: Vec::new(),
             exposure: 1.0,
             cuts: Vec::new(),
+            flash_gains: Vec::new(),
         };
         let cuts = t.find_cuts();
         assert_eq!(cuts.len(), 2, "{cuts:?}");
@@ -529,5 +601,48 @@ mod tests {
         assert!((t.to_nearest_cut(1.5).unwrap() - 0.05).abs() < 1e-9);
         assert!((t.to_nearest_cut(0.0).unwrap() - 0.95).abs() < 1e-9);
         assert_eq!(Track { cuts: Vec::new(), ..t }.to_nearest_cut(1.0), None);
+    }
+
+    #[test]
+    fn a_short_flash_is_toned_down_a_lasting_bright_scene_is_not() {
+        // 24 fps, one cell: dark, a 2-frame white flash, dark, then a white scene that lasts.
+        let mut levels = vec![40u8; 24];
+        levels.extend([255, 255]);
+        levels.extend(vec![40u8; 22]);
+        levels.extend(vec![255u8; 24]);
+        let t = Track {
+            fps: 24.0,
+            cols: 1,
+            rows: 1,
+            source_size: 0,
+            source: String::new(),
+            frames: levels.iter().flat_map(|v| [*v; 3]).collect(),
+            edge_cols: 0,
+            edge_rows: 0,
+            edges: Vec::new(),
+            exposure: 1.0,
+            cuts: Vec::new(),
+            flash_gains: Vec::new(),
+        };
+        let gains = t.find_flashes();
+        assert_eq!(gains.len(), levels.len());
+        assert!(gains[24] < 0.1 && gains[25] < 0.1, "{:?}", &gains[22..28]);
+        assert!(gains[..24].iter().chain(&gains[26..]).all(|g| *g == 1.0));
+        let t = Track { flash_gains: gains, ..t };
+        let mut g = Vec::new();
+        let dark = srgb_to_linear(40);
+        // Full guard: the flash is back to the level around it.
+        t.sample_for_lights(24.5 / 24.0, None, false, 1.0, &mut g);
+        assert!((g[0][0] - dark).abs() < 1e-3, "{:?}", g[0]);
+        // Half: halfway; off: the flash as it is.
+        t.sample_for_lights(24.5 / 24.0, None, false, 0.5, &mut g);
+        assert!((g[0][0] - (dark + 1.0) / 2.0).abs() < 0.02, "{:?}", g[0]);
+        t.sample_for_lights(24.5 / 24.0, None, false, 0.0, &mut g);
+        assert!(g[0][0] > 0.99);
+        // The lasting white scene stays white.
+        t.sample_for_lights(3.5, None, false, 1.0, &mut g);
+        assert!(g[0][0] > 0.99);
+        // No Flash in a film without any.
+        assert!(Track { frames: vec![40; 3 * 48], flash_gains: Vec::new(), ..t }.find_flashes().is_empty());
     }
 }
