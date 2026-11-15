@@ -9,6 +9,7 @@ pub struct Config {
     /// Folder holding the `.lueur` tracks.
     pub store: PathBuf,
     pub hue: HueConfig,
+    pub wled: WledConfig,
     pub jellyfin: JellyfinConfig,
     /// Jellyfin libraries lueur follows, with the folder where lueur sees them.
     pub libraries: Vec<Library>,
@@ -86,6 +87,7 @@ impl Default for Config {
         Self {
             store: PathBuf::new(),
             hue: Default::default(),
+            wled: Default::default(),
             jellyfin: Default::default(),
             libraries: Vec::new(),
             path_map: Vec::new(),
@@ -116,6 +118,52 @@ pub struct HueConfig {
     pub dtls_port: Option<u16>,
     /// Replacement REST URL (tests).
     pub base_url: Option<String>,
+}
+
+/// A WLED Strip around the TV and its Layout, seen from the couch.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WledConfig {
+    /// Controller IP or host (`:port` optional, DDP's 4048 otherwise). Set: the Strip replaces the Hue Area.
+    pub host: String,
+    /// The corner where the strip starts (LED 0).
+    pub start: Corner,
+    /// The way the strip runs from there.
+    pub clockwise: bool,
+    /// LEDs behind each side of the screen (0 = none).
+    pub left: u16,
+    pub top: u16,
+    pub right: u16,
+    pub bottom: u16,
+    /// Gamma lueur encodes with. 1 = linear light, right for WLED's default
+    /// (no gamma correction on real-time input); set WLED's own gamma (2.8)
+    /// here if you turn its real-time correction on, for finer dark shades.
+    pub gamma: f32,
+}
+
+impl Default for WledConfig {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            start: Corner::BottomLeft,
+            clockwise: true,
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+            gamma: 1.0,
+        }
+    }
+}
+
+/// A screen corner, clockwise from the bottom left.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Corner {
+    BottomLeft,
+    TopLeft,
+    TopRight,
+    BottomRight,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

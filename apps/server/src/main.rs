@@ -11,6 +11,7 @@ mod queue;
 mod render;
 mod server;
 mod track;
+mod wled;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};

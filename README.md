@@ -94,6 +94,16 @@ The image is amd64, tagged `latest`, `x.y` and `x.y.z`. `--device /dev/dri` is o
 2. In lueur → Setup, pick your bridge and press its link button.
 3. Lights late or early on cuts? Use **Sync offset** on the Now page (±0.1 s buttons).
 
+## 🎞️ WLED strip
+
+A [WLED](https://kno.wled.ge) strip behind the TV gets one color per LED, sent straight to the controller (DDP), in place of the Hue area. There is no setup screen yet: describe the strip in `lueur.json`, seen from the couch.
+
+```json
+"wled": { "host": "192.168.1.80", "start": "bottom-right", "clockwise": false, "right": 35, "top": 65, "left": 35, "bottom": 0 }
+```
+
+`start` is the corner of LED 0 (`bottom-left`, `top-left`, `top-right`, `bottom-right`). `lueur test` sends a rainbow to check it. Remove `host` to go back to Hue.
+
 <img src="docs/screenshots/look.jpg" alt="Look: test on a frame of a film, intensity presets and the sliders" />
 
 ## 🔎 Debugging the lights

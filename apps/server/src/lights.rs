@@ -8,6 +8,7 @@
 use crate::color::Rgb;
 use crate::hue::{Bridge, Stream};
 use crate::player::Live;
+use crate::wled::WledSink;
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -64,6 +65,35 @@ impl Sink for HueSink {
     }
 }
 
+/// The output in use: the Hue Area, or the WLED Strip.
+pub enum AnySink {
+    Hue(HueSink),
+    Wled(WledSink),
+}
+
+impl Sink for AnySink {
+    async fn open(&mut self) -> Result<()> {
+        match self {
+            Self::Hue(s) => s.open().await,
+            Self::Wled(s) => s.open().await,
+        }
+    }
+
+    fn send(&mut self, colors: &[(u8, Rgb)]) -> Result<()> {
+        match self {
+            Self::Hue(s) => s.send(colors),
+            Self::Wled(s) => s.send(colors),
+        }
+    }
+
+    async fn close(&mut self) {
+        match self {
+            Self::Hue(s) => s.close().await,
+            Self::Wled(s) => s.close().await,
+        }
+    }
+}
+
 pub struct Lights<S: Sink> {
     sink: S,
     live: Arc<Live>,
@@ -97,10 +127,10 @@ impl<S: Sink> Lights<S> {
                 return;
             }
             self.open = true;
-            info!("Entertainment stream open");
+            info!("stream open");
         }
         if let Err(e) = self.sink.send(colors) {
-            warn!("sending to the bridge: {e:#}");
+            warn!("sending to the lights: {e:#}");
             self.close().await;
             self.retry_at = Some(now + RETRY_SEND);
             return;

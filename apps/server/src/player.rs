@@ -1,13 +1,13 @@
 //! Main loop: follows Jellyfin, loads the track of the current film and
-//! streams colors to the entertainment area at 50 frames per second.
+//! streams colors to the lights at 50 or 60 frames per second.
 
 use crate::clock::{Correction, PlaybackClock};
 use crate::color::{Look, Rgb, linear_to_srgb, luminance};
 use crate::config::Config;
 use crate::diagnostics::{Diagnostics, Frame, Step, Summary};
-use crate::hue::{Area, Bridge, Channel};
+use crate::hue::{Bridge, Channel};
 use crate::jellyfin::{Jellyfin, NowPlaying};
-use crate::lights::{HueSink, Lights};
+use crate::lights::{AnySink, HueSink, Lights};
 use crate::queue::Queue;
 use crate::render::Renderer;
 use crate::track::{self, Track};
@@ -20,7 +20,11 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-const FRAME: Duration = Duration::from_millis(20);
+/// Time between two frames: 60 per second for a WLED Strip, which shows each
+/// one; 50 for the bridge, which keeps about 25 and smooths on its own.
+fn frame(cfg: &Config) -> Duration {
+    if cfg.wled.host.is_empty() { Duration::from_millis(20) } else { Duration::from_micros(16_667) }
+}
 const PAUSE_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_TRACK: Duration = Duration::from_secs(5);
 /// A frame this late is logged: the lights froze, then caught up at once.
@@ -125,21 +129,32 @@ impl Live {
 
 pub struct Player {
     cfg: Config,
-    lights: Lights<HueSink>,
-    area: Area,
+    lights: Lights<AnySink>,
+    channels: Vec<Channel>,
     live: Arc<Live>,
     queue: Arc<Queue>,
 }
 
+/// Where the colors go, with its name and Channels: the WLED Strip when one
+/// is configured, the Hue Area otherwise.
+async fn output(cfg: &Config) -> Result<(String, Vec<Channel>, AnySink)> {
+    if !cfg.wled.host.is_empty() {
+        let sink = AnySink::Wled(crate::wled::WledSink::new(&cfg.wled));
+        return Ok((format!("WLED strip ({})", cfg.wled.host), crate::wled::channels(&cfg.wled)?, sink));
+    }
+    let bridge = Bridge::new(&cfg.hue);
+    let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
+    let sink = AnySink::Hue(HueSink::new(bridge, &area.id));
+    Ok((area.metadata.name, area.channels, sink))
+}
+
 impl Player {
     pub async fn new(cfg: Config, live: Arc<Live>, queue: Arc<Queue>) -> Result<Self> {
-        let bridge = Bridge::new(&cfg.hue);
-        let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
-        info!("area \"{}\": {} channel(s)", area.metadata.name, area.channels.len());
+        let (name, channels, sink) = output(&cfg).await?;
+        info!("\"{name}\": {} channel(s)", channels.len());
         *live.status.lock().unwrap() = Status {
-            area: Some(area.metadata.name.clone()),
-            channels: area
-                .channels
+            area: Some(name),
+            channels: channels
                 .iter()
                 .map(|c| LiveChannel {
                     id: c.channel_id,
@@ -151,8 +166,8 @@ impl Player {
                 .collect(),
             ..Default::default()
         };
-        let lights = Lights::new(HueSink::new(bridge, &area.id), live.clone());
-        Ok(Self { cfg, lights, area, live, queue })
+        let lights = Lights::new(sink, live.clone());
+        Ok(Self { cfg, lights, channels, live, queue })
     }
 
     fn status(&self) -> std::sync::MutexGuard<'_, Status> {
@@ -245,10 +260,10 @@ impl Player {
         let mut current: Option<(String, Option<Arc<Track>>)> = None;
         let mut paused_since: Option<Instant> = None;
         let mut retry_track_at = Instant::now();
-        let mut renderer = Renderer::new(&self.area.channels);
-        let mut still_renderer = Renderer::new(&self.area.channels);
+        let mut renderer = Renderer::new(&self.channels);
+        let mut still_renderer = Renderer::new(&self.channels);
         let mut still: Option<(PathBuf, Track)> = None;
-        let mut tick = tokio::time::interval(FRAME);
+        let mut tick = tokio::time::interval(frame(&self.cfg));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last = Instant::now();
         tokio::pin!(stop);
@@ -364,7 +379,7 @@ impl Player {
                 // Same rendering as a film: moving the slider fades like a cut does.
                 still.as_ref().map(|(_, t)| still_renderer.colors(t, h.t, &look, dt).to_vec())
             } else {
-                self.live_test(now).map(|t| t.colors(&self.area.channels, now))
+                self.live_test(now).map(|t| t.colors(&self.channels, now))
             };
             self.lights.show(now, colors.as_deref()).await;
         }
@@ -395,16 +410,15 @@ impl Player {
 
 /// `lueur test`: the test pattern, without the player.
 pub async fn test_pattern(cfg: &Config, seconds: f32, only: Option<u8>) -> Result<()> {
-    let bridge = Bridge::new(&cfg.hue);
-    let area = bridge.find_area(cfg.hue.area.as_deref()).await?;
-    let mut lights = Lights::new(HueSink::new(bridge, &area.id), Arc::new(Live::default()));
+    let (_, channels, sink) = output(cfg).await?;
+    let mut lights = Lights::new(sink, Arc::new(Live::default()));
     let start = Instant::now();
     let pattern = TestPattern { only, start, until: start + Duration::from_secs_f32(seconds) };
-    let mut tick = tokio::time::interval(FRAME);
+    let mut tick = tokio::time::interval(frame(cfg));
     while Instant::now() < pattern.until {
         tick.tick().await;
         let now = Instant::now();
-        lights.show(now, Some(&pattern.colors(&area.channels, now))).await;
+        lights.show(now, Some(&pattern.colors(&channels, now))).await;
     }
     lights.close().await;
     Ok(())

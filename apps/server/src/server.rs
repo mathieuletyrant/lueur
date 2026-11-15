@@ -165,7 +165,7 @@ pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> 
 async fn supervise(app: Arc<App>) {
     while !app.stopping.load(Ordering::SeqCst) {
         let cfg = app.config();
-        let error = if cfg.hue.username.is_empty() {
+        let error = if cfg.hue.username.is_empty() && cfg.wled.host.is_empty() {
             "Bridge not paired".to_string()
         } else if cfg.jellyfin.url.is_empty() {
             "Jellyfin not configured".to_string()
@@ -190,7 +190,8 @@ async fn supervise(app: Arc<App>) {
 /// Config without its secrets.
 fn public(cfg: &Config) -> Value {
     let mut v = serde_json::to_value(cfg).unwrap_or_default();
-    v["paired"] = json!(!cfg.hue.username.is_empty());
+    // A WLED Strip needs no pairing: the UI's test and still frame work with it too.
+    v["paired"] = json!(!cfg.hue.username.is_empty() || !cfg.wled.host.is_empty());
     v["has_api_key"] = json!(!cfg.jellyfin.api_key.is_empty());
     v["hue"]["username"] = json!("");
     v["hue"]["clientkey"] = json!("");

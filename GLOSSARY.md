@@ -20,6 +20,16 @@ _Avoid_: Room, zone, group, entertainment configuration
 One positioned light slot inside an Area, colored from the matching part of the screen.
 _Avoid_: Light, bulb
 
+## WLED
+
+**Strip**:
+An addressable LED strip behind the TV, driven by a WLED controller; lueur colors each LED on its own, in place of the Area.
+_Avoid_: Bandeau, ribbon, LED tape
+
+**Layout**:
+How a Strip runs around the screen: the corner it starts from, its direction, and the LEDs behind each side.
+_Avoid_: Mapping, geometry
+
 ## Media
 
 **Library**:
