@@ -17,7 +17,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use tracing::{debug, info, warn};
 
 /// Time between two frames: 60 per second for a WLED Strip, which shows each
@@ -174,42 +174,6 @@ impl Player {
         self.live.status.lock().unwrap()
     }
 
-    /// The Track of what is playing, if it exists already.
-    fn find_track(&self, np: &NowPlaying) -> Option<Arc<Track>> {
-        let video = self.cfg.local_path(np.path.as_ref()?);
-        let t = Track::load(&track::track_path(&self.cfg.store, &video)).ok()?;
-        info!("track loaded for \"{}\" ({:.0} min)", np.name, t.duration() / 60.0);
-        Some(Arc::new(t))
-    }
-
-    fn load_track(&self, np: &NowPlaying) -> Option<Arc<Track>> {
-        let Some(jpath) = &np.path else {
-            warn!("\"{}\": unknown path (API key without admin rights?)", np.name);
-            return None;
-        };
-        let video = self.cfg.local_path(jpath);
-        if let Some(t) = self.find_track(np) {
-            // An older Track plays meanwhile; this film's new one comes before the rest of the Library.
-            if !track::is_fresh(&self.cfg.store, &video)
-                && !crate::queue::excluded(&video, &self.cfg.exclude)
-                && self.queue.push_front(video)
-            {
-                info!("\"{}\" has an older track: analyzing it again first, it plays as it is meanwhile", np.name);
-            }
-            return Some(t);
-        }
-        warn!("no track for \"{}\" (Jellyfin path: {jpath}, local path: {})", np.name, video.display());
-        if !video.exists() {
-            warn!("lueur can't see {}: check the Library folders", video.display());
-        } else if self.cfg.auto_analyze
-            && !crate::queue::excluded(&video, &self.cfg.exclude)
-            && self.queue.push_front(video)
-        {
-            info!("analysis queued, the lights will follow as soon as it is done");
-        }
-        None
-    }
-
     /// Runs until `stop` completes, then gives the lights back.
     pub async fn run(mut self, stop: impl Future<Output = ()>) -> Result<()> {
         let jf = Arc::new(Jellyfin::new(
@@ -265,6 +229,7 @@ impl Player {
         // The Look last written to the logs, to log it again when it changes.
         let mut logged_look: Option<Look> = None;
         let mut current: Option<(String, Option<Arc<Track>>)> = None;
+        let mut loading: Option<Loading> = None;
         let mut paused_since: Option<Instant> = None;
         let mut retry_track_at = Instant::now();
         let strip = !self.cfg.wled.host.is_empty();
@@ -296,7 +261,10 @@ impl Player {
                         let new = current.as_ref().map(|c| &c.0) != Some(&np.item_id);
                         if new {
                             info!("playing: \"{}\" on {}", np.name, np.device);
-                            current = Some((np.item_id.clone(), self.load_track(np)));
+                            current = Some((np.item_id.clone(), None));
+                            let (cfg, queue) = (self.cfg.clone(), self.queue.clone());
+                            loading = Some(Loading::spawn(np, move |np| load_track(&cfg, &queue, np)));
+                            retry_track_at = now + RETRY_TRACK;
                             diagnostics.reset();
                             logged_look = None;
                         }
@@ -310,6 +278,7 @@ impl Player {
                     }
                     None => {
                         current = None;
+                        loading = None;
                         clock.reset();
                         diagnostics.reset();
                         paused_since = None;
@@ -329,18 +298,34 @@ impl Player {
                 });
             }
 
+            // The Track read in the background, for the film still playing.
+            if let Some(l) = loading.as_mut() {
+                match l.done.try_recv() {
+                    Err(oneshot::error::TryRecvError::Empty) => {}
+                    result => {
+                        let id = loading.take().map(|l| l.item_id);
+                        if let Some(c) = current.as_mut().filter(|c| Some(&c.0) == id.as_ref())
+                            && let Ok(Some(t)) = result
+                        {
+                            if let Some(p) = self.status().playing.as_mut() {
+                                p.has_track = true;
+                                p.duration = Some(t.duration());
+                            }
+                            c.1 = Some(t);
+                        }
+                    }
+                }
+            }
+
             // Played before its Track was ready: pick it up as soon as the Analysis ends.
-            if let Some(c) = current.as_mut().filter(|c| c.1.is_none())
+            if let Some(c) = current.as_ref().filter(|c| c.1.is_none())
+                && loading.is_none()
                 && now >= retry_track_at
             {
                 retry_track_at = now + RETRY_TRACK;
-                let np = rx.borrow().clone().filter(|np| np.item_id == c.0);
-                if let Some(t) = np.and_then(|np| self.find_track(&np)) {
-                    if let Some(p) = self.status().playing.as_mut() {
-                        p.has_track = true;
-                        p.duration = Some(t.duration());
-                    }
-                    c.1 = Some(t);
+                if let Some(np) = rx.borrow().clone().filter(|np| np.item_id == c.0) {
+                    let cfg = self.cfg.clone();
+                    loading = Some(Loading::spawn(&np, move |np| find_track(&cfg, np)));
                 }
             }
 
@@ -416,6 +401,56 @@ impl Player {
             *t = None;
         }
         t.clone()
+    }
+}
+
+/// The Track of what is playing, if it exists already.
+fn find_track(cfg: &Config, np: &NowPlaying) -> Option<Arc<Track>> {
+    let video = cfg.local_path(np.path.as_ref()?);
+    let t = Track::load(&track::track_path(&cfg.store, &video)).ok()?;
+    info!("track loaded for \"{}\" ({:.0} min)", np.name, t.duration() / 60.0);
+    Some(Arc::new(t))
+}
+
+/// The Track of what starts playing, queuing its Analysis when it has none or an older one.
+fn load_track(cfg: &Config, queue: &Arc<Queue>, np: &NowPlaying) -> Option<Arc<Track>> {
+    let Some(jpath) = &np.path else {
+        warn!("\"{}\": unknown path (API key without admin rights?)", np.name);
+        return None;
+    };
+    let video = cfg.local_path(jpath);
+    if let Some(t) = find_track(cfg, np) {
+        // An older Track plays meanwhile; this film's new one comes before the rest of the Library.
+        if !track::is_fresh(&cfg.store, &video)
+            && !crate::queue::excluded(&video, &cfg.exclude)
+            && queue.push_front(video)
+        {
+            info!("\"{}\" has an older track: analyzing it again first, it plays as it is meanwhile", np.name);
+        }
+        return Some(t);
+    }
+    warn!("no track for \"{}\" (Jellyfin path: {jpath}, local path: {})", np.name, video.display());
+    if !video.exists() {
+        warn!("lueur can't see {}: check the Library folders", video.display());
+    } else if cfg.auto_analyze && !crate::queue::excluded(&video, &cfg.exclude) && queue.push_front(video) {
+        info!("analysis queued, the lights will follow as soon as it is done");
+    }
+    None
+}
+
+/// A Track being read from disk, away from the frame loop: decompressing a
+/// film's Track takes most of a second, during which the lights would freeze.
+struct Loading {
+    item_id: String,
+    done: oneshot::Receiver<Option<Arc<Track>>>,
+}
+
+impl Loading {
+    fn spawn(np: &NowPlaying, load: impl FnOnce(&NowPlaying) -> Option<Arc<Track>> + Send + 'static) -> Self {
+        let (tx, done) = oneshot::channel();
+        let np2 = np.clone();
+        tokio::task::spawn_blocking(move || tx.send(load(&np2)).ok());
+        Self { item_id: np.item_id.clone(), done }
     }
 }
 
