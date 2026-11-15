@@ -8,7 +8,7 @@ import { Step } from "./Step";
 
 const kindIcon = { movies: Film, tvshows: Tv, mixed: Library } as Record<string, typeof Film>;
 
-export function LibrariesStep({ done, locked }: { done: boolean; locked: boolean }) {
+export function LibrariesStep({ n, done, locked }: { n: number; done: boolean; locked: boolean }) {
   const { cfg, patch } = useApp();
   const [open, setOpen] = useState(!done);
   const jf = useLoad(() => (locked ? Promise.resolve([]) : api.jellyfinLibraries()), [locked, cfg.jellyfin.url]);
@@ -52,7 +52,7 @@ export function LibrariesStep({ done, locked }: { done: boolean; locked: boolean
 
   return (
     <Step
-      n={4}
+      n={n}
       title="Libraries"
       done={done}
       locked={locked}

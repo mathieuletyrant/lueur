@@ -6,9 +6,82 @@ use crate::config::WledConfig;
 use crate::hue::{Channel, Position};
 use crate::lights::Sink;
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::net::UdpSocket;
 
 const DDP_PORT: u16 = 4048;
+
+/// A WLED controller, as it describes itself.
+#[derive(Debug, Clone, Serialize)]
+pub struct Found {
+    pub host: String,
+    pub name: String,
+    pub version: String,
+    /// LEDs set up in WLED (LED preferences).
+    pub leds: u32,
+}
+
+/// The controller's own description (`GET /json/info`), to check the host and read its LED count.
+pub async fn info(host: &str) -> Result<Found> {
+    #[derive(Deserialize)]
+    struct Leds {
+        count: u32,
+    }
+    #[derive(Deserialize)]
+    struct Info {
+        name: String,
+        ver: String,
+        leds: Leds,
+    }
+    // `wled.host` may carry DDP's port; WLED's API is on port 80.
+    let ip = host.split(':').next().unwrap_or(host).trim();
+    let http = reqwest::Client::builder().timeout(Duration::from_secs(4)).build()?;
+    let url = format!("http://{ip}/json/info");
+    let r: Info = http
+        .get(&url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .with_context(|| format!("no WLED controller answers at {ip}"))?
+        .json()
+        .await
+        .with_context(|| format!("{ip} answers, but not like a WLED controller"))?;
+    Ok(Found { host: ip.to_string(), name: r.name, version: r.ver, leds: r.leds.count })
+}
+
+/// WLED controllers on the network: they announce themselves over mDNS.
+pub async fn discover() -> Vec<Found> {
+    let hosts = tokio::task::spawn_blocking(|| mdns(Duration::from_secs(3))).await.unwrap_or_default();
+    let mut found = Vec::new();
+    for host in hosts {
+        found.extend(info(&host).await.ok());
+    }
+    found
+}
+
+fn mdns(wait: Duration) -> Vec<String> {
+    let Ok(daemon) = mdns_sd::ServiceDaemon::new() else {
+        return vec![];
+    };
+    let Ok(rx) = daemon.browse("_wled._tcp.local.") else {
+        return vec![];
+    };
+    let end = std::time::Instant::now() + wait;
+    let mut hosts = Vec::new();
+    while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
+        let Ok(event) = rx.recv_timeout(left) else { break };
+        if let mdns_sd::ServiceEvent::ServiceResolved(service) = event {
+            for ip in service.get_addresses_v4() {
+                if !hosts.contains(&ip.to_string()) {
+                    hosts.push(ip.to_string());
+                }
+            }
+        }
+    }
+    daemon.shutdown().ok();
+    hosts
+}
 
 /// One Channel per LED, in wiring order, placed on the screen edge it sits
 /// behind (Hue coordinates, so the renderer maps a Strip like an Area).

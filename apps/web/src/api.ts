@@ -17,9 +17,25 @@ export type SyncConfig = { learn_report_delay: boolean; jump_ms: number; drift_m
 
 export type Library = { name: string; jellyfin: string; path: string };
 
+export type Corner = "bottom-left" | "top-left" | "top-right" | "bottom-right";
+
+export type WledConfig = {
+  host: string;
+  start: Corner;
+  clockwise: boolean;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  gamma: number;
+};
+
+export type WledFound = { host: string; name: string; version: string; leds: number };
+
 export type Config = {
   store: string;
   hue: { bridge: string; area?: string | null };
+  wled: WledConfig;
   jellyfin: { url: string; device?: string | null };
   libraries: Library[];
   look: Look;
@@ -109,6 +125,8 @@ export const api = {
   bridges: () => call<Bridge[]>("GET", "bridges"),
   pair: (host: string) => call<{ paired: boolean }>("POST", "bridge/pair", { host }),
   areas: () => call<Area[]>("GET", "areas"),
+  wledDiscover: () => call<WledFound[]>("GET", "wled/discover"),
+  wledInfo: (host: string) => call<WledFound>("GET", `wled/info?host=${encodeURIComponent(host)}`),
   test: (channel?: number) => call<object>("POST", "test", { channel }),
   jellyfinInfo: () => call<{ name: string; version: string }>("GET", "jellyfin/info"),
   jellyfinDevices: () => call<string[]>("GET", "jellyfin/devices"),

@@ -131,6 +131,8 @@ pub async fn serve(path: PathBuf, cfg: Config, port: u16) -> anyhow::Result<()> 
         .route("/api/bridges", get(bridges))
         .route("/api/bridge/pair", post(pair))
         .route("/api/areas", get(areas))
+        .route("/api/wled/discover", get(wled_discover))
+        .route("/api/wled/info", get(wled_info))
         .route("/api/test", post(test))
         .route("/api/jellyfin/info", get(jellyfin_info))
         .route("/api/jellyfin/devices", get(jellyfin_devices))
@@ -289,6 +291,19 @@ async fn pair(State(app): State<Arc<App>>, Json(r): Json<PairReq>) -> Res {
 
 async fn areas(State(app): State<Arc<App>>) -> Res<Vec<hue::Area>> {
     Ok(Json(app.bridge()?.areas().await?))
+}
+
+async fn wled_discover() -> Res<Vec<crate::wled::Found>> {
+    Ok(Json(crate::wled::discover().await))
+}
+
+#[derive(Deserialize)]
+struct WledQuery {
+    host: String,
+}
+
+async fn wled_info(Query(q): Query<WledQuery>) -> Res<crate::wled::Found> {
+    crate::wled::info(&q.host).await.map(Json).map_err(|e| bad(format!("{e:#}")))
 }
 
 #[derive(Deserialize, Default)]
