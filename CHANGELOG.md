@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/mathieuletyrant/lueur/compare/v0.19.0...v0.20.0) (2026-11-15)
+
+
+### ✨ Features
+
+* **track:** finer Edges at 24 fps, so a Strip follows the picture ([b3f7e42](https://github.com/mathieuletyrant/lueur/commit/b3f7e42b7d8c961a0a684691d2285a4aed645a79))
+
 ## [0.19.0](https://github.com/mathieuletyrant/lueur/compare/v0.18.0...v0.19.0) (2026-11-15)
 
 
