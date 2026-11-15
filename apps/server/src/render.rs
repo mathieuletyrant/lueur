@@ -62,13 +62,8 @@ impl Renderer {
                 Mapping::new(&self.channels, track.cols, track.rows, look)
             });
         }
-        let half = smoothing_at(track, t, look);
-        match (edges, look.centered_smoothing) {
-            (false, true) => track.sample_centered(t, half, &mut self.grid),
-            (false, false) => track.sample(t, &mut self.grid),
-            (true, true) => track.sample_edges_centered(t, half, &mut self.grid),
-            (true, false) => track.sample_edges(t, &mut self.grid),
-        }
+        let half = look.centered_smoothing.then(|| smoothing_at(track, t, look));
+        track.sample_for_lights(t, half, edges, look.flash_guard, &mut self.grid);
         self.mapping.as_ref().unwrap().colors(&self.grid, &mut self.colors);
         for c in self.colors.iter_mut() {
             c.1 = look.apply(c.1);
@@ -241,6 +236,7 @@ mod tests {
             edges: Vec::new(),
             exposure: 1.0,
             cuts: Vec::new(),
+            flash_gains: Vec::new(),
         }
     }
 

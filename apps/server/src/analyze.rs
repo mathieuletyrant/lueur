@@ -224,6 +224,7 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
         edges,
         exposure: 1.0,
         cuts: Vec::new(),
+        flash_gains: Vec::new(),
     };
     Ok((track, Stats { elapsed: start.elapsed().as_secs_f64(), hwaccel: hw }))
 }

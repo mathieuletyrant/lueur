@@ -18,6 +18,9 @@ const DEFAULT: Look = {
   centered_smoothing: true,
   auto_exposure: true,
   warm_greys: 0.5,
+  flash_guard: 0.5,
+  black_threshold: 0,
+  black_falloff: 2,
 };
 
 type NumKey = Exclude<keyof Look, "fit_area" | "centered_smoothing" | "auto_exposure">;
@@ -28,6 +31,9 @@ const specs: Spec[] = [
   { key: "brightness", label: "Brightness", hint: "Multiplies every color.", min: 0.1, max: 2, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: "saturation", label: "Saturation", hint: "Above 100% makes colors pop, below washes them out.", min: 0, max: 2, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: "warm_greys", label: "Warm greys", hint: "Grey, washed-out scenes lean to a warm white instead of a cold grey. Colorful scenes are untouched.", min: 0, max: 1, step: 0.05, fmt: (v) => (v ? `${Math.round(v * 100)}%` : "Off") },
+  { key: "flash_guard", label: "Flash guard", hint: "Tones down flashes (explosions, lightning, camera flashes): a few frames much brighter than around them. lueur knows the film ahead, so it catches them with no delay. Easier on the eyes.", min: 0, max: 1, step: 0.05, fmt: (v) => (v ? `${Math.round(v * 100)}%` : "Off") },
+  { key: "black_threshold", label: "Black threshold", hint: "Very dark colors fade out instead of showing dim and muddy. The opposite of Minimum brightness, which wins if both are set.", min: 0, max: 0.1, step: 0.005, fmt: (v) => (v ? `${(v * 100).toFixed(1)}%` : "Off") },
+  { key: "black_falloff", label: "Black falloff", hint: "How fast colors under the Black threshold fade out: 1 is a straight fade, higher goes dark sooner.", min: 1, max: 4, step: 0.25, fmt: (v) => `×${v}` },
   { key: "min_brightness", label: "Minimum brightness", hint: "Keeps a soft light during dark scenes instead of going black.", min: 0, max: 0.3, step: 0.01, fmt: (v) => (v ? `${Math.round(v * 100)}%` : "Off") },
   { key: "smoothing_ms", label: "Smoothing", hint: "How long a change of color takes. Higher is calmer, lower follows the picture more closely.", min: 0, max: 2000, step: 50, fmt: (v) => (v ? `${v} ms` : "Off") },
   { key: "cut_fade_ms", label: "Cut fade", hint: "How long a cut between two shots takes, centered on it. Keep Smoothing low to follow the picture, cuts still fade softly. Below Smoothing, cuts fade like the rest.", min: 0, max: 2000, step: 50, fmt: (v) => (v ? `${v} ms` : "Off") },
