@@ -1,15 +1,15 @@
 import type { Look } from "../../api";
 import { Card, CardHeader, cx } from "../../ui";
 
-type Preset = Pick<Look, "smoothing_ms" | "spread" | "saturation" | "warm_greys">;
+type Preset = Pick<Look, "smoothing_ms" | "cut_fade_ms" | "spread" | "saturation" | "warm_greys">;
 
 /** How lively the lights are, like Hue Sync's intensities. Each one sets a few
  *  sliders at once; brightness, the room's business, is never touched. */
 export const PRESETS: { name: string; hint: string; values: Preset }[] = [
-  { name: "Subtle", hint: "Slow fades, soft colors. Calm, for long evenings.", values: { smoothing_ms: 800, spread: 1.6, saturation: 1.0, warm_greys: 0.6 } },
-  { name: "Moderate", hint: "Follows the film without drawing attention.", values: { smoothing_ms: 400, spread: 1.2, saturation: 1.15, warm_greys: 0.5 } },
-  { name: "High", hint: "Quick and colorful, each side of the screen its own.", values: { smoothing_ms: 200, spread: 1.0, saturation: 1.3, warm_greys: 0.4 } },
-  { name: "Intense", hint: "Every cut, every flash. For action and animation.", values: { smoothing_ms: 60, spread: 0.8, saturation: 1.5, warm_greys: 0.2 } },
+  { name: "Subtle", hint: "Slow fades, soft colors. Calm, for long evenings.", values: { smoothing_ms: 800, cut_fade_ms: 1000, spread: 1.6, saturation: 1.0, warm_greys: 0.6 } },
+  { name: "Moderate", hint: "Follows the film without drawing attention.", values: { smoothing_ms: 400, cut_fade_ms: 600, spread: 1.2, saturation: 1.15, warm_greys: 0.5 } },
+  { name: "High", hint: "Quick and colorful, each side of the screen its own.", values: { smoothing_ms: 200, cut_fade_ms: 400, spread: 1.0, saturation: 1.3, warm_greys: 0.4 } },
+  { name: "Intense", hint: "Every cut, every flash. For action and animation.", values: { smoothing_ms: 60, cut_fade_ms: 0, spread: 0.8, saturation: 1.5, warm_greys: 0.2 } },
 ];
 
 // The server stores floats as f32: compare loosely.

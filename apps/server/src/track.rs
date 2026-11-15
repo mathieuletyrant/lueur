@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 5] = b"LUEUR";
 const VERSION: u8 = 2;
+/// A frame that differs this much from the one before (mean over the grid, 0
+/// to 1) may be a cut…
+const CUT_CHANGE: f32 = 0.08;
+/// …if it changes this many times more than the frames around it.
+const CUT_CONTRAST: f32 = 2.5;
 
 #[derive(Debug, Clone)]
 pub struct Track {
@@ -37,6 +42,8 @@ pub struct Track {
     pub edges: Vec<u8>,
     /// Brightness gain that lifts a dark film to a usual level (≥ 1), set by `load`.
     pub exposure: f32,
+    /// Cuts between two shots, in seconds from the start, sorted; found by `load`.
+    pub cuts: Vec<f64>,
 }
 
 impl Track {
@@ -124,6 +131,7 @@ impl Track {
             edge_rows,
             edges: Vec::new(),
             exposure: 1.0,
+            cuts: Vec::new(),
         };
         let grids = count * t.frame_len();
         if body.len() != grids + count * t.edge_cells() * 3 {
@@ -137,6 +145,7 @@ impl Track {
             undo_differences(&mut t.edges, edge_len);
         }
         t.exposure = t.measure_exposure();
+        t.cuts = t.find_cuts();
         Ok(t)
     }
 
@@ -162,6 +171,42 @@ impl Track {
         let k = levels.len() * 3 / 4;
         let p75 = *levels.select_nth_unstable_by(k, f32::total_cmp).1;
         (0.6 / p75.max(1e-3)).clamp(1.0, 3.0)
+    }
+
+    /// Where the picture changes at once, from one frame to the next, and
+    /// much more than around it: a cut between two shots, not a pan or a fade.
+    /// A cut sits halfway between its two frames, where `sample` crosses it.
+    fn find_cuts(&self) -> Vec<f64> {
+        let n = self.frame_count();
+        // How much each frame differs from the one before (0 to 1, mean over the grid).
+        let change: Vec<f32> = (0..n)
+            .map(|i| {
+                if i == 0 {
+                    return 0.0;
+                }
+                let (a, b) = (self.frame(i - 1), self.frame(i));
+                let sum: u32 = a.iter().zip(b).map(|(a, b)| a.abs_diff(*b) as u32).sum();
+                sum as f32 / (a.len().max(1) as f32 * 255.0)
+            })
+            .collect();
+        (1..n)
+            .filter(|&i| {
+                let around = change[i - 1].max(change.get(i + 1).copied().unwrap_or(0.0));
+                change[i] >= CUT_CHANGE && change[i] >= CUT_CONTRAST * around
+            })
+            .map(|i| (i as f64 - 0.5) / self.fps as f64)
+            .collect()
+    }
+
+    /// How far `t` is from the nearest cut (seconds), if the film has any.
+    pub fn to_nearest_cut(&self, t: f64) -> Option<f64> {
+        let i = self.cuts.partition_point(|c| *c < t);
+        let after = self.cuts.get(i).map(|c| c - t);
+        let before = i.checked_sub(1).map(|j| t - self.cuts[j]);
+        match (before, after) {
+            (Some(b), Some(a)) => Some(b.min(a)),
+            (b, a) => b.or(a),
+        }
     }
 
     /// The film's colors from start to end: `n` stripes, each the average of
@@ -249,10 +294,12 @@ fn sample_cells(data: &[u8], cells: usize, fps: f32, t: f64, out: &mut Vec<Rgb>)
     }
 }
 
-/// `sample_cells` averaged over `t ± half` seconds with triangular weights.
+/// `sample_cells` averaged over `t ± half` seconds with triangular weights,
+/// down to zero at `± half`: the average changes smoothly with `half`, so a
+/// wider window shows no jump.
 fn sample_cells_centered(data: &[u8], cells: usize, fps: f32, t: f64, half: f64, out: &mut Vec<Rgb>) {
     let step = 1.0 / fps as f64;
-    let m = (half / step).ceil() as i32;
+    let m = (half / step).floor() as i32;
     if m < 1 {
         return sample_cells(data, cells, fps, t, out);
     }
@@ -260,7 +307,10 @@ fn sample_cells_centered(data: &[u8], cells: usize, fps: f32, t: f64, half: f64,
     let mut total = 0.0;
     let mut g = Vec::new();
     for i in -m..=m {
-        let w = 1.0 - i.abs() as f32 / (m + 1) as f32;
+        let w = (1.0 - i.abs() as f64 * step / half) as f32;
+        if w <= 0.0 {
+            continue;
+        }
         sample_cells(data, cells, fps, t + i as f64 * step, &mut g);
         for (a, c) in acc.iter_mut().zip(&g) {
             for ch in 0..3 {
@@ -364,6 +414,7 @@ mod tests {
             edge_rows: 0,
             edges: Vec::new(),
             exposure: 1.0,
+            cuts: Vec::new(),
         };
         let p = dir.join("t.lueur");
         t.save(&p).unwrap();
@@ -387,11 +438,12 @@ mod tests {
             edge_rows: 0,
             edges: Vec::new(),
             exposure: 1.0,
+            cuts: Vec::new(),
         };
         let mut g = Vec::new();
         cut.sample_centered(0.95, 0.3, &mut g);
         assert!((g[0][0] - 0.5).abs() < 0.05, "{:?}", g[0]);
-        cut.sample_centered(0.7, 0.3, &mut g);
+        cut.sample_centered(0.75, 0.3, &mut g);
         assert!(g[0][0] > 0.0 && g[0][0] < 0.2, "{:?}", g[0]);
         // Barcode: black then white.
         assert_eq!(cut.barcode(2), vec![[0; 3], [255; 3]]);
@@ -419,6 +471,7 @@ mod tests {
             edge_rows: 1,
             edges: edges.clone(),
             exposure: 1.0,
+            cuts: Vec::new(),
         };
         let p = dir.join("t.lueur");
         t.save(&p).unwrap();
@@ -446,5 +499,35 @@ mod tests {
         assert_eq!((old.frame_count(), old.has_edges(), old.source.as_str()), (2, false, "/x/"));
         assert_eq!(old.frame(1), [255, 255, 255]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn finds_cuts_not_pans_or_fades() {
+        // 10 fps, one cell: a slow fade up (0 → 90), a cut to white, a pan-like
+        // drift, then a cut back to black.
+        let mut frames: Vec<u8> = (0..10u8).map(|i| i * 10).collect();
+        frames.extend([250, 248, 246, 244, 242, 240]);
+        frames.extend([0, 0, 0, 0]);
+        let t = Track {
+            fps: 10.0,
+            cols: 1,
+            rows: 1,
+            source_size: 0,
+            source: String::new(),
+            frames: frames.iter().flat_map(|v| [*v; 3]).collect(),
+            edge_cols: 0,
+            edge_rows: 0,
+            edges: Vec::new(),
+            exposure: 1.0,
+            cuts: Vec::new(),
+        };
+        let cuts = t.find_cuts();
+        assert_eq!(cuts.len(), 2, "{cuts:?}");
+        assert!((cuts[0] - 0.95).abs() < 1e-9 && (cuts[1] - 1.55).abs() < 1e-9, "{cuts:?}");
+        let t = Track { cuts, ..t };
+        assert!((t.to_nearest_cut(1.0).unwrap() - 0.05).abs() < 1e-9);
+        assert!((t.to_nearest_cut(1.5).unwrap() - 0.05).abs() < 1e-9);
+        assert!((t.to_nearest_cut(0.0).unwrap() - 0.95).abs() < 1e-9);
+        assert_eq!(Track { cuts: Vec::new(), ..t }.to_nearest_cut(1.0), None);
     }
 }

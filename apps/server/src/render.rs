@@ -62,7 +62,7 @@ impl Renderer {
                 Mapping::new(&self.channels, track.cols, track.rows, look)
             });
         }
-        let half = look.smoothing_ms as f64 / 1000.0;
+        let half = smoothing_at(track, t, look);
         match (edges, look.centered_smoothing) {
             (false, true) => track.sample_centered(t, half, &mut self.grid),
             (false, false) => track.sample(t, &mut self.grid),
@@ -78,6 +78,15 @@ impl Renderer {
         }
         &self.colors
     }
+}
+
+/// How far around `t` centered smoothing averages (seconds): the Look's
+/// smoothing, or its cut fade near a cut. The window widens as soon as the cut
+/// is within reach, when the cut's far side still weighs nothing in it, so
+/// the switch shows no jump.
+fn smoothing_at(track: &Track, t: f64, look: &Look) -> f64 {
+    let (half, cut) = (look.smoothing_ms as f64 / 1000.0, look.cut_fade_ms as f64 / 1000.0);
+    if cut > half && track.to_nearest_cut(t).is_some_and(|d| d < cut) { cut } else { half }
 }
 
 /// For each channel, the grid cells (or Edge cells) that light it and their weights.
@@ -216,6 +225,7 @@ impl Smoother {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::srgb_to_linear;
     use crate::hue::Position;
 
     fn track(frames: Vec<u8>) -> Track {
@@ -230,6 +240,7 @@ mod tests {
             edge_rows: 0,
             edges: Vec::new(),
             exposure: 1.0,
+            cuts: Vec::new(),
         }
     }
 
@@ -259,6 +270,28 @@ mod tests {
         let before = r.colors(&cut, 1.4, &look, 0.02)[0].1[0];
         let on = r.colors(&cut, 1.45, &look, 0.02)[0].1[0];
         assert!(before > 0.0 && before < on, "{before} {on}");
+    }
+
+    #[test]
+    fn cuts_fade_longer_than_the_rest() {
+        let ch = [Channel { channel_id: 0, position: Position { x: 0.0, y: 0.0, z: 0.0 } }];
+        let look = Look { smoothing_ms: 100.0, cut_fade_ms: 500.0, warm_greys: 0.0, saturation: 1.0, ..Look::default() };
+        // A cut from black to white at 1.45 s, then a slow ramp from 3 s on.
+        let mut levels = [[0u8; 15], [255u8; 15]].concat();
+        levels.extend((0..30).map(|i| 255 - i * 4));
+        let cut = Track { cuts: vec![1.45], ..track(levels.iter().flat_map(|v| [*v; 3]).collect()) };
+        let mut r = Renderer::for_area(&ch);
+        let at = |r: &mut Renderer, t| r.colors(&cut, t, &look, 0.02)[0].1[0];
+        // 0.3 s before the cut: already lighter (the cut fades over ±0.5 s), not with smoothing alone.
+        assert!(at(&mut r, 1.15) > 0.01, "{}", at(&mut r, 1.15));
+        let plain = Look { cut_fade_ms: 0.0, ..look.clone() };
+        assert_eq!(Renderer::for_area(&ch).colors(&cut, 1.15, &plain, 0.02)[0].1[0], 0.0);
+        // No jump when the window widens, 0.5 s before the cut.
+        let (a, b) = (at(&mut r, 0.949), at(&mut r, 0.951));
+        assert!((a - b).abs() < 0.01, "{a} {b}");
+        // Far from any cut, the short smoothing: the ramp is followed closely.
+        let expected = srgb_to_linear(255 - 15 * 4);
+        assert!((at(&mut r, 4.5) - expected).abs() < 0.02, "{} {expected}", at(&mut r, 4.5));
     }
 
     #[test]

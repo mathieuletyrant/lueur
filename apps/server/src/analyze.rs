@@ -223,6 +223,7 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
         edge_rows: opts.edge_rows,
         edges,
         exposure: 1.0,
+        cuts: Vec::new(),
     };
     Ok((track, Stats { elapsed: start.elapsed().as_secs_f64(), hwaccel: hw }))
 }

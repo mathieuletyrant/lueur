@@ -11,6 +11,7 @@ const DEFAULT: Look = {
   saturation: 1.15,
   min_brightness: 0,
   smoothing_ms: 250,
+  cut_fade_ms: 400,
   offset_ms: 0,
   spread: 1,
   fit_area: true,
@@ -28,7 +29,8 @@ const specs: Spec[] = [
   { key: "saturation", label: "Saturation", hint: "Above 100% makes colors pop, below washes them out.", min: 0, max: 2, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: "warm_greys", label: "Warm greys", hint: "Grey, washed-out scenes lean to a warm white instead of a cold grey. Colorful scenes are untouched.", min: 0, max: 1, step: 0.05, fmt: (v) => (v ? `${Math.round(v * 100)}%` : "Off") },
   { key: "min_brightness", label: "Minimum brightness", hint: "Keeps a soft light during dark scenes instead of going black.", min: 0, max: 0.3, step: 0.01, fmt: (v) => (v ? `${Math.round(v * 100)}%` : "Off") },
-  { key: "smoothing_ms", label: "Smoothing", hint: "How long a change of color takes. Higher is calmer, lower follows cuts more sharply.", min: 0, max: 2000, step: 50, fmt: (v) => (v ? `${v} ms` : "Off") },
+  { key: "smoothing_ms", label: "Smoothing", hint: "How long a change of color takes. Higher is calmer, lower follows the picture more closely.", min: 0, max: 2000, step: 50, fmt: (v) => (v ? `${v} ms` : "Off") },
+  { key: "cut_fade_ms", label: "Cut fade", hint: "How long a cut between two shots takes, centered on it. Keep Smoothing low to follow the picture, cuts still fade softly. Below Smoothing, cuts fade like the rest.", min: 0, max: 2000, step: 50, fmt: (v) => (v ? `${v} ms` : "Off") },
   { key: "spread", label: "Spread", hint: "How much of the screen each light reads. Lower: each light more distinct. Higher: calmer, closer colors.", min: 0.4, max: 3, step: 0.1, fmt: (v) => `${Math.round(v * 100)}%` },
 ];
 
