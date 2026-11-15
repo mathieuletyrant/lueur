@@ -275,7 +275,8 @@ mod tests {
     #[test]
     fn cuts_fade_longer_than_the_rest() {
         let ch = [Channel { channel_id: 0, position: Position { x: 0.0, y: 0.0, z: 0.0 } }];
-        let look = Look { smoothing_ms: 100.0, cut_fade_ms: 500.0, warm_greys: 0.0, saturation: 1.0, ..Look::default() };
+        let look =
+            Look { smoothing_ms: 100.0, cut_fade_ms: 500.0, warm_greys: 0.0, saturation: 1.0, ..Look::default() };
         // A cut from black to white at 1.45 s, then a slow ramp from 3 s on.
         let mut levels = [[0u8; 15], [255u8; 15]].concat();
         levels.extend((0..30).map(|i| 255 - i * 4));
@@ -381,4 +382,3 @@ mod tests {
         assert!(out[1].1[2] > 0.95 && out[1].1[0] < 0.05, "{:?}", out[1]);
     }
 }
-
