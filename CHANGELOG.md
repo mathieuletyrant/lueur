@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.22.0](https://github.com/mathieuletyrant/lueur/compare/v0.21.0...v0.22.0) (2026-11-15)
+
+
+### ✨ Features
+
+* **look:** cut fade, so cuts fade softly while the lights follow the picture ([8d00405](https://github.com/mathieuletyrant/lueur/commit/8d0040592bce5f1ef03b2087697e53548810e16e))
+
+
+### 🐛 Fixes
+
+* **player:** read a film's Track away from the frame loop ([fbcd44e](https://github.com/mathieuletyrant/lueur/commit/fbcd44e7705b7a448398045653c43176a2c27e2e))
+* **sync:** follow the mean of recent reports, not each one ([825089d](https://github.com/mathieuletyrant/lueur/commit/825089d8082af46ad05f3aceeedb40e956610fde))
+
 ## [0.21.0](https://github.com/mathieuletyrant/lueur/compare/v0.20.0...v0.21.0) (2026-11-15)
 
 
