@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/mathieuletyrant/lueur/compare/v0.20.0...v0.21.0) (2026-11-15)
+
+
+### ✨ Features
+
+* **web:** set up the WLED Strip from Settings ([d626ca0](https://github.com/mathieuletyrant/lueur/commit/d626ca081b5116411bc2d7cc167c5ae7883cd36c)), closes [#31](https://github.com/mathieuletyrant/lueur/issues/31)
+
 ## [0.20.0](https://github.com/mathieuletyrant/lueur/compare/v0.19.0...v0.20.0) (2026-11-15)
 
 
