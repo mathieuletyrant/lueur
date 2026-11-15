@@ -53,8 +53,12 @@ The one-time decoding of a video file into its Track.
 _Avoid_: Scan, processing, indexing
 
 **Track**:
-The precomputed sequence of small color grids for one video file.
+The precomputed sequence of small color grids, and of Edges, for one video file.
 _Avoid_: Color file, profile
+
+**Edges**:
+The thin band along each side of the picture, cut into finer cells than the grid, that a Strip's LEDs read; a Hue Area reads the grid.
+_Avoid_: Ring, border, edge ring
 
 **Barcode**:
 A film's colors from start to end, one thin stripe per stretch of the Track.

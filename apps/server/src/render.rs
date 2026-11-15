@@ -6,9 +6,11 @@ use crate::color::{Look, Rgb};
 use crate::hue::Channel;
 use crate::track::Track;
 
-/// Renders a Track on an Area's lights, frame after frame.
+/// Renders a Track on an Area's lights or a Strip's LEDs, frame after frame.
 pub struct Renderer {
     channels: Vec<Channel>,
+    /// The Channels are a Strip's LEDs: they read the Edges, when the Track has them.
+    strip: bool,
     /// The Track being rendered (its address): a new one restarts the smoothing.
     track: usize,
     mapping: Option<Mapping>,
@@ -18,9 +20,20 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(channels: &[Channel]) -> Self {
+    /// For a Hue Area: each light reads the grid.
+    pub fn for_area(channels: &[Channel]) -> Self {
+        Self::new(channels, false)
+    }
+
+    /// For a WLED Strip: each LED reads the Edge cells in front of it.
+    pub fn for_strip(channels: &[Channel]) -> Self {
+        Self::new(channels, true)
+    }
+
+    fn new(channels: &[Channel], strip: bool) -> Self {
         Self {
             channels: channels.to_vec(),
+            strip,
             track: 0,
             mapping: None,
             smoother: Smoother { state: Vec::new() },
@@ -39,14 +52,22 @@ impl Renderer {
             self.smoother.state.clear();
         }
         let look = &look.with_exposure(track.exposure);
+        // A version 1 Track has no Edges: a Strip reads its grid, like an Area.
+        let edges = self.strip && track.has_edges();
         // Built once per Track, again when the Look's spread or fit_area change.
-        if !self.mapping.as_ref().is_some_and(|m| m.made_for(track, look)) {
-            self.mapping = Some(Mapping::new(&self.channels, track.cols, track.rows, look));
+        if !self.mapping.as_ref().is_some_and(|m| m.made_for(track, look, edges)) {
+            self.mapping = Some(if edges {
+                Mapping::along_edges(&self.channels, track.edge_cols, track.edge_rows, look)
+            } else {
+                Mapping::new(&self.channels, track.cols, track.rows, look)
+            });
         }
-        if look.centered_smoothing {
-            track.sample_centered(t, look.smoothing_ms as f64 / 1000.0, &mut self.grid);
-        } else {
-            track.sample(t, &mut self.grid);
+        let half = look.smoothing_ms as f64 / 1000.0;
+        match (edges, look.centered_smoothing) {
+            (false, true) => track.sample_centered(t, half, &mut self.grid),
+            (false, false) => track.sample(t, &mut self.grid),
+            (true, true) => track.sample_edges_centered(t, half, &mut self.grid),
+            (true, false) => track.sample_edges(t, &mut self.grid),
         }
         self.mapping.as_ref().unwrap().colors(&self.grid, &mut self.colors);
         for c in self.colors.iter_mut() {
@@ -59,11 +80,11 @@ impl Renderer {
     }
 }
 
-/// For each Hue channel, the grid cells that light it and their weights.
+/// For each channel, the grid cells (or Edge cells) that light it and their weights.
 struct Mapping {
     channels: Vec<(u8, Vec<(usize, f32)>)>,
-    /// What it was built for: the grid size, and the Look's spread and fit_area.
-    made_for: (u8, u8, f32, bool),
+    /// What it was built for: Edges or grid, their size, and the Look's spread and fit_area.
+    made_for: (bool, u8, u8, f32, bool),
 }
 
 impl Mapping {
@@ -106,11 +127,50 @@ impl Mapping {
                 (ch.channel_id, w)
             })
             .collect();
-        Self { channels, made_for: (cols as u8, rows as u8, look.spread, look.fit_area) }
+        Self { channels, made_for: (false, cols as u8, rows as u8, look.spread, look.fit_area) }
     }
 
-    fn made_for(&self, track: &Track, look: &Look) -> bool {
-        self.made_for == (track.cols, track.rows, look.spread, look.fit_area)
+    /// Strip LEDs, placed on the screen's edges (x and z from -1 to 1, as
+    /// `wled::channels` puts them). Each LED takes a Gaussian average of the
+    /// Edge cells next to it, along the edge and around the corners; distances
+    /// are measured on a 16:9 screen, so a cell is as wide on the sides as on top.
+    fn along_edges(channels: &[Channel], cols: u8, rows: u8, look: &Look) -> Self {
+        let (cols_n, rows_n) = (cols as usize, rows as usize);
+        // Where each Edge cell touches the screen's border, in the order of the Track.
+        let mut cells = Vec::with_capacity(2 * (cols_n + rows_n));
+        for v in [0.0, 1.0] {
+            cells.extend((0..cols_n).map(|c| ((c as f32 + 0.5) / cols_n as f32, v)));
+        }
+        for u in [0.0, 1.0] {
+            cells.extend((0..rows_n).map(|r| (u, (r as f32 + 0.5) / rows_n as f32)));
+        }
+        // The Look's spread widens it, for a calmer Strip.
+        let sigma = EDGE_SPREAD * look.spread.clamp(0.2, 5.0);
+        let channels = channels
+            .iter()
+            .map(|ch| {
+                let u = (ch.position.x + 1.0) / 2.0;
+                let v = (1.0 - ch.position.z) / 2.0;
+                let mut w = Vec::new();
+                let mut total = 0.0;
+                for (i, (cu, cv)) in cells.iter().enumerate() {
+                    let d = (((cu - u) * 16.0).powi(2) + ((cv - v) * 9.0).powi(2)) / sigma.powi(2);
+                    let k = (-0.5 * d).exp();
+                    if k > 0.01 {
+                        w.push((i, k));
+                        total += k;
+                    }
+                }
+                w.iter_mut().for_each(|(_, k)| *k /= total);
+                (ch.channel_id, w)
+            })
+            .collect();
+        Self { channels, made_for: (true, cols, rows, look.spread, look.fit_area) }
+    }
+
+    fn made_for(&self, track: &Track, look: &Look, edges: bool) -> bool {
+        let size = if edges { (track.edge_cols, track.edge_rows) } else { (track.cols, track.rows) };
+        self.made_for == (edges, size.0, size.1, look.spread, look.fit_area)
     }
 
     fn colors(&self, grid: &[Rgb], out: &mut Vec<(u8, Rgb)>) {
@@ -126,6 +186,11 @@ impl Mapping {
         }
     }
 }
+
+/// How far along the edge a Strip LED reads (the Gaussian's width), in
+/// sixteenths of the screen's width: 0.15 is about half an Edge cell (64
+/// along the top), so a LED mostly sees the cells right in front of it.
+const EDGE_SPREAD: f32 = 0.15;
 
 /// Per-channel exponential smoothing (the bridge smooths too, but at 25 Hz).
 struct Smoother {
@@ -154,14 +219,25 @@ mod tests {
     use crate::hue::Position;
 
     fn track(frames: Vec<u8>) -> Track {
-        Track { fps: 10.0, cols: 1, rows: 1, source_size: 0, source: String::new(), frames, exposure: 1.0 }
+        Track {
+            fps: 10.0,
+            cols: 1,
+            rows: 1,
+            source_size: 0,
+            source: String::new(),
+            frames,
+            edge_cols: 0,
+            edge_rows: 0,
+            edges: Vec::new(),
+            exposure: 1.0,
+        }
     }
 
     #[test]
     fn smooths_within_a_track_and_restarts_on_a_new_one() {
         let ch = [Channel { channel_id: 3, position: Position { x: 0.0, y: 0.0, z: 0.0 } }];
         let look = Look { centered_smoothing: false, smoothing_ms: 500.0, warm_greys: 0.0, ..Look::default() };
-        let mut r = Renderer::new(&ch);
+        let mut r = Renderer::for_area(&ch);
         // A film that goes from black to white at 1.5 s.
         let cut = track([[0; 45], [255; 45]].concat());
         assert_eq!(r.colors(&cut, 1.0, &look, 0.02), [(3, [0.0; 3])]);
@@ -178,7 +254,7 @@ mod tests {
         let ch = [Channel { channel_id: 0, position: Position { x: 0.0, y: 0.0, z: 0.0 } }];
         let look = Look { smoothing_ms: 300.0, warm_greys: 0.0, saturation: 1.0, ..Look::default() };
         let cut = track([[0; 45], [255; 45]].concat());
-        let mut r = Renderer::new(&ch);
+        let mut r = Renderer::for_area(&ch);
         // Already lighter just before the cut, halfway on it: no delay.
         let before = r.colors(&cut, 1.4, &look, 0.02)[0].1[0];
         let on = r.colors(&cut, 1.45, &look, 0.02)[0].1[0];
@@ -219,6 +295,48 @@ mod tests {
     }
 
     #[test]
+    fn strip_leds_see_the_edge_just_in_front_of_them() {
+        let cfg = crate::config::WledConfig { top: 65, left: 35, right: 35, ..Default::default() };
+        let leds = crate::wled::channels(&cfg).unwrap();
+        let (cols, rows) = (64usize, 36usize);
+        // Edges all blue, but a thin green band in the middle of the top, cells 31
+        // and 32, and the left side red.
+        let mut edges = vec![[0.0, 0.0, 1.0]; 2 * (cols + rows)];
+        edges[31] = [0.0, 1.0, 0.0];
+        edges[32] = [0.0, 1.0, 0.0];
+        for cell in &mut edges[2 * cols..2 * cols + rows] {
+            *cell = [1.0, 0.0, 0.0];
+        }
+        let m = Mapping::along_edges(&leds, cols as u8, rows as u8, &Look::default());
+        let mut out = Vec::new();
+        m.colors(&edges, &mut out);
+        // Clockwise from the bottom left: the left side first (35 LEDs), then the top.
+        let top_middle = out[35 + 32].1;
+        assert!(top_middle[1] > 0.8, "the LED in front of the green band is green: {top_middle:?}");
+        let top_quarter = out[35 + 16].1;
+        assert!(top_quarter[2] > 0.99, "a quarter along, the top is blue: {top_quarter:?}");
+        let left = out[17].1;
+        assert!(left[0] > 0.99, "the left side is red: {left:?}");
+        // On the grid, the same band is a tenth of a cell: lost in the blue around it.
+        let grid: Vec<Rgb> = (0..16 * 9).map(|_| [0.0, 0.0, 1.0]).collect();
+        let on_grid = Mapping::new(&leds, 16, 9, &Look::default());
+        on_grid.colors(&grid, &mut out);
+        assert!(out[35 + 32].1[1] < 0.01);
+    }
+
+    #[test]
+    fn a_strip_reads_the_grid_of_a_track_without_edges() {
+        let cfg = crate::config::WledConfig { top: 10, ..Default::default() };
+        let leds = crate::wled::channels(&cfg).unwrap();
+        let look = Look { warm_greys: 0.0, saturation: 1.0, ..Look::default() };
+        let mut r = Renderer::for_strip(&leds);
+        let red = Track { cols: 16, rows: 9, ..track([255, 0, 0].repeat(16 * 9 * 2)) };
+        let colors = r.colors(&red, 0.0, &look, 0.02);
+        assert_eq!(colors.len(), 10);
+        assert!(colors.iter().all(|c| c.1[0] > 0.99), "{colors:?}");
+    }
+
+    #[test]
     fn left_light_sees_left_of_screen() {
         let ch = |id, x| Channel { channel_id: id, position: Position { x, y: 0.8, z: 0.0 } };
         let m = Mapping::new(&[ch(0, -1.0), ch(1, 1.0)], 16, 9, &Look::default());
@@ -230,3 +348,4 @@ mod tests {
         assert!(out[1].1[2] > 0.95 && out[1].1[0] < 0.05, "{:?}", out[1]);
     }
 }
+

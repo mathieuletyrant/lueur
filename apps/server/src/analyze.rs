@@ -1,6 +1,6 @@
 //! Video file analysis: ffmpeg decodes (in hardware when possible) and
-//! shrinks each frame to 96×54 right on the GPU; Rust only sees ~15 KB per
-//! frame, detects black bars and computes the grid.
+//! shrinks each frame to 128×72 right on the GPU; Rust only sees ~28 KB per
+//! frame, detects black bars and computes the grid and the Edges.
 
 use crate::color::{linear_to_srgb, srgb_to_linear};
 use crate::track::Track;
@@ -12,8 +12,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-pub const SAMPLE_W: usize = 96;
-pub const SAMPLE_H: usize = 54;
+pub const SAMPLE_W: usize = 128;
+pub const SAMPLE_H: usize = 72;
+/// How deep into the picture an Edge cell reads, as a share of its height.
+const EDGE_DEPTH: f32 = 0.1;
 const RENDER_NODE: &str = "/dev/dri/renderD128";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -35,6 +37,10 @@ pub struct Options {
     pub fps: f32,
     pub cols: u8,
     pub rows: u8,
+    /// Edge cells along the top and the bottom.
+    pub edge_cols: u8,
+    /// Edge cells along each side.
+    pub edge_rows: u8,
     pub hwaccel: HwAccel,
     pub threads: u32,
     /// Incremented for every analyzed frame (progress reporting).
@@ -171,9 +177,9 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
 
     let frame_bytes = SAMPLE_W * SAMPLE_H * 3;
     let mut buf = vec![0u8; frame_bytes];
-    let mut grid = Grid::new(opts.cols as usize, opts.rows as usize);
     let mut bars = Bars::new((opts.fps * 2.0) as u32);
     let mut frames = Vec::new();
+    let mut edges = Vec::new();
     loop {
         match out.read_exact(&mut buf) {
             Ok(()) => {}
@@ -181,7 +187,8 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
             Err(e) => return Err(e.into()),
         }
         let crop = bars.update(&buf);
-        grid.compute(&buf, crop, &mut frames);
+        grid(&buf, crop, opts.cols as usize, opts.rows as usize, &mut frames);
+        edge_cells(&buf, crop, opts.edge_cols as usize, opts.edge_rows as usize, &mut edges);
         if let Some(p) = &opts.progress {
             p.fetch_add(1, Ordering::Relaxed);
         }
@@ -212,6 +219,9 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
         source_size,
         source: video.to_string_lossy().into_owned(),
         frames,
+        edge_cols: opts.edge_cols,
+        edge_rows: opts.edge_rows,
+        edges,
         exposure: 1.0,
     };
     Ok((track, Stats { elapsed: start.elapsed().as_secs_f64(), hwaccel: hw }))
@@ -294,41 +304,68 @@ impl Bars {
     }
 }
 
-/// Per-cell average, in linear light (averaging in sRGB darkens).
-struct Grid {
-    cols: usize,
-    rows: usize,
-    acc: Vec<[f32; 4]>,
-}
-
-impl Grid {
-    fn new(cols: usize, rows: usize) -> Self {
-        Self { cols, rows, acc: vec![[0.0; 4]; cols * rows] }
-    }
-
-    fn compute(&mut self, px: &[u8], crop: Crop, out: &mut Vec<u8>) {
-        let (x0, x1) = (crop.left, SAMPLE_W - crop.right);
-        let (y0, y1) = (crop.top, SAMPLE_H - crop.bottom);
-        let (aw, ah) = (x1 - x0, y1 - y0);
-        self.acc.iter_mut().for_each(|a| *a = [0.0; 4]);
-        for y in y0..y1 {
-            let r = ((y - y0) * self.rows / ah).min(self.rows - 1);
-            for x in x0..x1 {
-                let c = ((x - x0) * self.cols / aw).min(self.cols - 1);
-                let i = (y * SAMPLE_W + x) * 3;
-                let a = &mut self.acc[r * self.cols + c];
-                a[0] += srgb_to_linear(px[i]);
-                a[1] += srgb_to_linear(px[i + 1]);
-                a[2] += srgb_to_linear(px[i + 2]);
-                a[3] += 1.0;
-            }
-        }
-        for a in &self.acc {
-            let n = a[3].max(1.0);
-            out.extend(a[..3].iter().map(|v| (linear_to_srgb(v / n) * 255.0).round() as u8));
+/// The grid: `cols × rows` cells over the useful picture, row after row.
+fn grid(px: &[u8], crop: Crop, cols: usize, rows: usize, out: &mut Vec<u8>) {
+    let (x0, x1) = (crop.left, SAMPLE_W - crop.right);
+    let (y0, y1) = (crop.top, SAMPLE_H - crop.bottom);
+    for r in 0..rows {
+        for c in 0..cols {
+            out.extend(average(px, part(x0, x1, c, cols), part(y0, y1, r, rows)));
         }
     }
 }
+
+/// The Edges: thin cells along each side of the useful picture, `EDGE_DEPTH`
+/// deep. Top then bottom (left to right), then left and right (top to bottom).
+fn edge_cells(px: &[u8], crop: Crop, cols: usize, rows: usize, out: &mut Vec<u8>) {
+    let (x0, x1) = (crop.left, SAMPLE_W - crop.right);
+    let (y0, y1) = (crop.top, SAMPLE_H - crop.bottom);
+    // As many pixels deep on every side: the band looks as thick on the sides as on top.
+    let depth = ((y1 - y0) as f32 * EDGE_DEPTH).round().max(1.0) as usize;
+    for ys in [y0..y0 + depth, y1 - depth..y1] {
+        for c in 0..cols {
+            out.extend(average(px, part(x0, x1, c, cols), ys.clone()));
+        }
+    }
+    for xs in [x0..x0 + depth, x1 - depth..x1] {
+        for r in 0..rows {
+            out.extend(average(px, xs.clone(), part(y0, y1, r, rows)));
+        }
+    }
+}
+
+/// The `i`th of `n` equal parts of `start..end`, never empty.
+fn part(start: usize, end: usize, i: usize, n: usize) -> std::ops::Range<usize> {
+    let len = end - start;
+    let from = start + i * len / n;
+    let to = (start + (i + 1) * len / n).max(from + 1).min(end);
+    from.min(end - 1)..to
+}
+
+/// The color of an area of the picture, in sRGB: an average in linear light
+/// (averaging in sRGB darkens) where colorful pixels count more than grey
+/// ones, so a red object on a grey wall stays red instead of a dull pink.
+/// A grey area still gets its grey.
+fn average(px: &[u8], xs: std::ops::Range<usize>, ys: std::ops::Range<usize>) -> [u8; 3] {
+    let mut acc = [0f32; 3];
+    let mut total = 0f32;
+    for y in ys {
+        for x in xs.clone() {
+            let i = (y * SAMPLE_W + x) * 3;
+            let (r, g, b) = (px[i], px[i + 1], px[i + 2]);
+            let chroma = (r.max(g).max(b) - r.min(g).min(b)) as f32 / 255.0;
+            let weight = GREY_WEIGHT + chroma;
+            acc[0] += srgb_to_linear(r) * weight;
+            acc[1] += srgb_to_linear(g) * weight;
+            acc[2] += srgb_to_linear(b) * weight;
+            total += weight;
+        }
+    }
+    acc.map(|v| (linear_to_srgb(v / total.max(1e-6)) * 255.0).round() as u8)
+}
+
+/// How much a grey pixel counts, next to a fully colorful one (1 + this).
+const GREY_WEIGHT: f32 = 0.25;
 
 #[cfg(test)]
 mod tests {
@@ -358,15 +395,54 @@ mod tests {
     #[test]
     fn letterbox_is_detected_after_hold_and_ignores_dark_scenes() {
         let mut b = Bars::new(3);
-        let lb = frame(7..47, 200); // 7 black rows at the top and bottom
+        let lb = frame(9..63, 200); // 9 black rows at the top and bottom
         for _ in 0..2 {
             assert_eq!(b.update(&lb).top, 0);
         }
-        assert_eq!(b.update(&lb).top, 7);
-        assert_eq!(b.current().bottom, 7);
+        assert_eq!(b.update(&lb).top, 9);
+        assert_eq!(b.current().bottom, 9);
         // Fully black scene: the framing does not move.
-        assert_eq!(b.update(&frame(0..0, 0)).top, 7);
+        assert_eq!(b.update(&frame(0..0, 0)).top, 9);
         // Full-frame picture: the bar shrinks immediately.
-        assert_eq!(b.update(&frame(0..54, 200)).top, 0);
+        assert_eq!(b.update(&frame(0..SAMPLE_H, 200)).top, 0);
+    }
+
+    /// A frame of one color, with `patch` painted over the area `xs` × `ys`.
+    fn painted(color: [u8; 3], patch: [u8; 3], xs: std::ops::Range<usize>, ys: std::ops::Range<usize>) -> Vec<u8> {
+        let mut f: Vec<u8> = color.repeat(SAMPLE_W * SAMPLE_H);
+        for y in ys {
+            for x in xs.clone() {
+                f[(y * SAMPLE_W + x) * 3..][..3].copy_from_slice(&patch);
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn a_red_patch_on_grey_keeps_its_red() {
+        // A cell a third red, two thirds mid grey.
+        let f = painted([128; 3], [220, 20, 20], 0..10, 0..10);
+        let [r, g, b] = average(&f, 0..10, 0..30);
+        assert!(r > 180 && g < 120 && b < 120, "red, not a dull pink: {r} {g} {b}");
+        // A grey cell stays grey.
+        assert_eq!(average(&f, 20..30, 20..30), [128; 3]);
+    }
+
+    #[test]
+    fn edges_read_a_thin_band_along_each_side() {
+        let crop = Crop { top: 0, bottom: 0, left: 0, right: 0 };
+        // A green stripe 4 pixels wide along the top tenth, in the middle; blue everywhere else.
+        let f = painted([0, 0, 255], [0, 255, 0], 62..66, 0..8);
+        let mut out = Vec::new();
+        edge_cells(&f, crop, 64, 36, &mut out);
+        assert_eq!(out.len(), 2 * (64 + 36) * 3);
+        let cell = |i: usize| [out[i * 3], out[i * 3 + 1], out[i * 3 + 2]];
+        assert_eq!((cell(31), cell(32)), ([0, 255, 0], [0, 255, 0]));
+        assert_eq!(cell(30), [0, 0, 255]);
+        assert_eq!(cell(64 + 31), [0, 0, 255], "the bottom doesn't see it");
+        // The grid's cell there is 8×8 pixels: the stripe is a sixth of it.
+        let mut grid_out = Vec::new();
+        grid(&f, crop, 16, 9, &mut grid_out);
+        assert!(grid_out[7 * 3 + 2] > 200, "{:?}", &grid_out[21..24]);
     }
 }
