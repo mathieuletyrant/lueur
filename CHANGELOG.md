@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.1](https://github.com/mathieuletyrant/lueur/compare/v0.23.0...v0.23.1) (2026-11-17)
+
+
+### 🐛 Fixes
+
+* tone-map HDR10 videos at Analysis ([#41](https://github.com/mathieuletyrant/lueur/issues/41)) ([53d93fc](https://github.com/mathieuletyrant/lueur/commit/53d93fce0f1b9880d5053618a57eb5472f5eac38))
+
 ## [0.23.0](https://github.com/mathieuletyrant/lueur/compare/v0.22.0...v0.23.0) (2026-11-15)
 
 
