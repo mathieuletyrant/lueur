@@ -2,14 +2,15 @@
 //! shrinks each frame to 128×72 right on the GPU; Rust only sees ~28 KB per
 //! frame, detects black bars and computes the grid and the Edges.
 
-use crate::color::{linear_to_srgb, srgb_to_linear};
+use crate::color::{hdr_to_srgb, linear_to_srgb, srgb_to_linear};
 use crate::track::Track;
 use anyhow::{Context, Result, bail};
+use std::collections::HashMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const SAMPLE_W: usize = 128;
@@ -90,14 +91,47 @@ pub fn analyze(video: &Path, opts: &Options) -> Result<(Track, Stats)> {
     }
 }
 
-/// Codec of the first real video stream (not a cover picture), from ffprobe.
-fn codec(video: &Path) -> Option<String> {
+/// What ffprobe says of the first real video stream (not a cover picture).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Probe {
+    pub codec: Option<String>,
+    /// HDR10 / Dolby Vision with an HDR10 base (PQ transfer, BT.2020 colors):
+    /// decoded as is, it reads washed out and far too dim, so it is tone-mapped.
+    pub hdr: bool,
+}
+
+pub fn probe(video: &Path) -> Probe {
     let out = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "V:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
+        .args(["-v", "error", "-select_streams", "V:0", "-show_entries", "stream=codec_name,color_transfer"])
+        .args(["-of", "default=noprint_wrappers=1"])
         .arg(video)
-        .output()
-        .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|c| !c.is_empty())
+        .output();
+    out.map(|o| parse_probe(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
+}
+
+fn parse_probe(text: &str) -> Probe {
+    let mut p = Probe::default();
+    for line in text.lines() {
+        match line.trim().split_once('=') {
+            Some(("codec_name", c)) if !c.is_empty() => p.codec = Some(c.to_string()),
+            Some(("color_transfer", t)) => p.hdr = t == "smpte2084",
+            _ => {}
+        }
+    }
+    p
+}
+
+/// Whether the video is HDR, asked once per file (and size) for the life of the process.
+pub fn is_hdr(video: &Path) -> bool {
+    static SEEN: OnceLock<Mutex<HashMap<(PathBuf, u64), bool>>> = OnceLock::new();
+    let Ok(size) = std::fs::metadata(video).map(|m| m.len()) else { return false };
+    let key = (video.to_path_buf(), size);
+    if let Some(h) = SEEN.get_or_init(Default::default).lock().unwrap().get(&key) {
+        return *h;
+    }
+    let hdr = probe(video).hdr;
+    SEEN.get_or_init(Default::default).lock().unwrap().insert(key, hdr);
+    hdr
 }
 
 /// Video duration in seconds, from ffprobe.
@@ -110,8 +144,11 @@ pub fn duration(video: &Path) -> Option<f64> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
-fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel, codec: Option<&str>) -> Vec<String> {
+fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel, probe: &Probe) -> Vec<String> {
     let fps = opts.fps;
+    // HDR keeps its 10 bits down to Rust, which tone-maps (`color::hdr_to_srgb`).
+    let gpu_fmt = if probe.hdr { "p010" } else { "nv12" };
+    let cpu_fmt = if probe.hdr { "p010le" } else { "nv12" };
     let mut a: Vec<String> = vec!["-hide_banner".into(), "-loglevel".into(), "error".into(), "-nostdin".into()];
     let filter = match hw {
         HwAccel::Vaapi => {
@@ -119,11 +156,11 @@ fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel, codec: Option<&str>) -
                 ["-hwaccel", "vaapi", "-hwaccel_device", RENDER_NODE, "-hwaccel_output_format", "vaapi"]
                     .map(String::from),
             );
-            format!("fps={fps},scale_vaapi=w={SAMPLE_W}:h={SAMPLE_H}:format=nv12,hwdownload,format=nv12")
+            format!("fps={fps},scale_vaapi=w={SAMPLE_W}:h={SAMPLE_H}:format={gpu_fmt},hwdownload,format={cpu_fmt}")
         }
         HwAccel::Qsv => {
             a.extend(["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"].map(String::from));
-            format!("fps={fps},vpp_qsv=w={SAMPLE_W}:h={SAMPLE_H}:format=nv12,hwdownload,format=nv12")
+            format!("fps={fps},vpp_qsv=w={SAMPLE_W}:h={SAMPLE_H}:format={gpu_fmt},hwdownload,format={cpu_fmt}")
         }
         HwAccel::Videotoolbox => {
             // Decoded on the Mac's GPU, frames copied back then shrunk (negligible cost).
@@ -140,7 +177,7 @@ fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel, codec: Option<&str>) -
         }
     };
     // ffmpeg prefers libdav1d for AV1, which never uses the GPU: ask for its own decoder.
-    if hw == HwAccel::Vaapi && codec == Some("av1") {
+    if hw == HwAccel::Vaapi && probe.codec.as_deref() == Some("av1") {
         a.extend(["-c:v", "av1"].map(String::from));
     }
     // Frames no other frame refers to (most B-frames) are skipped: about half
@@ -150,19 +187,28 @@ fn ffmpeg_args(video: &Path, opts: &Options, hw: HwAccel, codec: Option<&str>) -
     a.extend(["-i".into(), video.to_string_lossy().into_owned()]);
     // `V`, not `v`: skips cover pictures stored as video streams.
     a.extend(["-map", "0:V:0", "-an", "-sn", "-dn", "-vf"].map(String::from));
-    a.push(filter);
-    a.extend(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"].map(String::from));
+    if probe.hdr {
+        // Explicit BT.2020 matrix and full range: the PQ signal must reach Rust intact.
+        a.push(format!("{filter},scale=in_color_matrix=bt2020:in_range=tv:out_range=full,format=rgb48le"));
+        a.extend(["-f", "rawvideo", "-pix_fmt", "rgb48le", "pipe:1"].map(String::from));
+    } else {
+        a.push(filter);
+        a.extend(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"].map(String::from));
+    }
     a
 }
 
 fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
     let start = Instant::now();
     let source_size = std::fs::metadata(video).with_context(|| format!("{}", video.display()))?.len();
-    let codec = if hw == HwAccel::Vaapi { codec(video) } else { None };
+    let probe = probe(video);
+    if probe.hdr {
+        tracing::info!("{} is HDR: tone-mapped to SDR", video.file_name().unwrap_or_default().to_string_lossy());
+    }
     // Lowest priority: an analysis never slows down Jellyfin or the rest of the server.
     let mut child = Command::new("nice")
         .args(["-n", "19", "ffmpeg"])
-        .args(ffmpeg_args(video, opts, hw, codec.as_deref()))
+        .args(ffmpeg_args(video, opts, hw, &probe))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -177,11 +223,15 @@ fn run(video: &Path, opts: &Options, hw: HwAccel) -> Result<(Track, Stats)> {
 
     let frame_bytes = SAMPLE_W * SAMPLE_H * 3;
     let mut buf = vec![0u8; frame_bytes];
+    // HDR: 16 bits per channel from ffmpeg, tone-mapped into `buf`.
+    let mut wide = vec![0u8; if probe.hdr { frame_bytes * 2 } else { 0 }];
     let mut bars = Bars::new((opts.fps * 2.0) as u32);
     let mut frames = Vec::new();
     let mut edges = Vec::new();
     loop {
-        match out.read_exact(&mut buf) {
+        let read = if probe.hdr { out.read_exact(&mut wide) } else { out.read_exact(&mut buf) };
+        match read {
+            Ok(()) if probe.hdr => hdr_frame(&wide, &mut buf),
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e.into()),
@@ -236,6 +286,14 @@ pub struct Crop {
     pub bottom: usize,
     pub left: usize,
     pub right: usize,
+}
+
+/// One rgb48le HDR frame (PQ, BT.2020) into sRGB bytes.
+fn hdr_frame(wide: &[u8], out: &mut [u8]) {
+    for (px, o) in wide.as_chunks::<6>().0.iter().zip(out.as_chunks_mut::<3>().0) {
+        let c = |i: usize| u16::from_le_bytes([px[i], px[i + 1]]);
+        *o = hdr_to_srgb([c(0), c(2), c(4)]);
+    }
 }
 
 /// Black bar tracking (2.39:1 letterbox, 4:3 pillarbox).
@@ -384,14 +442,37 @@ mod tests {
     #[test]
     fn av1_uses_ffmpeg_own_decoder_on_vaapi_and_skips_covers() {
         let opts = crate::analyze_options();
-        let a = ffmpeg_args(Path::new("f.mkv"), &opts, HwAccel::Vaapi, Some("av1"));
+        let av1 = Probe { codec: Some("av1".into()), hdr: false };
+        let a = ffmpeg_args(Path::new("f.mkv"), &opts, HwAccel::Vaapi, &av1);
         let (c, i) = (a.iter().position(|x| x == "-c:v").unwrap(), a.iter().position(|x| x == "-i").unwrap());
         assert!(c < i && a[c + 1] == "av1");
         assert!(a.contains(&"0:V:0".to_string()));
         assert!(a.windows(2).any(|w| w == ["-skip_frame", "noref"]));
 
-        let a = ffmpeg_args(Path::new("f.mkv"), &opts, HwAccel::Vaapi, Some("hevc"));
+        let hevc = Probe { codec: Some("hevc".into()), hdr: false };
+        let a = ffmpeg_args(Path::new("f.mkv"), &opts, HwAccel::Vaapi, &hevc);
         assert!(!a.contains(&"-c:v".to_string()));
+    }
+
+    #[test]
+    fn hdr_keeps_ten_bits_and_reads_bt2020() {
+        let p = parse_probe("codec_name=hevc\ncolor_transfer=smpte2084\n");
+        assert_eq!(p, Probe { codec: Some("hevc".into()), hdr: true });
+        assert!(!parse_probe("codec_name=h264\ncolor_transfer=bt709\n").hdr);
+        assert!(!parse_probe("codec_name=h264\ncolor_transfer=unknown\n").hdr);
+
+        let opts = crate::analyze_options();
+        for hw in [HwAccel::Vaapi, HwAccel::None] {
+            let a = ffmpeg_args(Path::new("f.mkv"), &opts, hw, &p);
+            let vf = &a[a.iter().position(|x| x == "-vf").unwrap() + 1];
+            assert!(vf.contains("in_color_matrix=bt2020") && vf.ends_with("format=rgb48le"), "{vf}");
+            assert!(a.windows(2).any(|w| w == ["-pix_fmt", "rgb48le"]));
+            if hw == HwAccel::Vaapi {
+                assert!(vf.contains("format=p010,hwdownload,format=p010le"), "{vf}");
+            }
+        }
+        let sdr = ffmpeg_args(Path::new("f.mkv"), &opts, HwAccel::Vaapi, &Probe::default());
+        assert!(sdr.windows(2).any(|w| w == ["-pix_fmt", "rgb24"]));
     }
 
     #[test]

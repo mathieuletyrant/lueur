@@ -2,7 +2,7 @@
 //! (16×9) and the Edges of the picture in finer cells, computed once and for
 //! all during analysis.
 //!
-//! `.lueur` file format, version 2:
+//! `.lueur` file format, version 3 (same layout as 2; HDR videos tone-mapped):
 //! `LUEUR` | version u8 | fps f32 | cols u8 | rows u8 | frames u32 |
 //! source size u64 | edge cols u8 | edge rows u8 | len u16 | source path (UTF-8) |
 //! zstd(grids, then Edges, each frame stored as its difference from the previous one)
@@ -16,7 +16,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 5] = b"LUEUR";
-const VERSION: u8 = 2;
+/// 3: HDR videos are tone-mapped at Analysis (same layout as 2).
+const VERSION: u8 = 3;
 /// A frame that differs this much from the one before (mean over the grid, 0
 /// to 1) may be a cut…
 const CUT_CHANGE: f32 = 0.08;
@@ -117,7 +118,7 @@ impl Track {
             bail!("{} is not a lueur track", path.display());
         }
         let version = data[5];
-        if version != 1 && version != VERSION {
+        if !(1..=VERSION).contains(&version) {
             bail!("unsupported track version {version}");
         }
         let fps = f32::from_le_bytes(data[6..10].try_into()?);
@@ -432,7 +433,8 @@ pub fn track_path(store: &Path, video: &Path) -> PathBuf {
 }
 
 /// A track exists, still matches the file (same size) and is of the current
-/// version: nothing to analyze again.
+/// version, or of version 2 for an SDR video (version 3 only changed HDR):
+/// nothing to analyze again.
 pub fn is_fresh(store: &Path, video: &Path) -> bool {
     fresh_duration(store, video).is_some()
 }
@@ -440,7 +442,7 @@ pub fn is_fresh(store: &Path, video: &Path) -> bool {
 /// Duration in seconds of the video's track, when it is fresh (header only).
 pub fn fresh_duration(store: &Path, video: &Path) -> Option<f64> {
     let (version, duration) = header(store, video)?;
-    (version == VERSION).then_some(duration)
+    (version == VERSION || (version == 2 && !crate::analyze::is_hdr(video))).then_some(duration)
 }
 
 /// A track exists and still matches the file, maybe of an older version: it plays.
